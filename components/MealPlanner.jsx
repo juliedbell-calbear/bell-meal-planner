@@ -177,33 +177,27 @@ export default function MealPlanner() {
   // Poll for updates every 2 seconds while on the shopping tab
   useEffect(() => {
     if (tab !== "shopping") return;
-    console.log("[shopping] tab opened, starting poll");
 
     const sync = () =>
       fetch("/api/shopping")
         .then((r) => r.json())
-        .then((data) => { console.log("[shopping] poll received:", data); setChecked(data); })
-        .catch((e) => console.error("[shopping] poll error:", e));
+        .then((data) => setChecked(data))
+        .catch(() => {});
 
     sync();
     const interval = setInterval(sync, 2000);
-    return () => { console.log("[shopping] poll stopped"); clearInterval(interval); };
+    return () => clearInterval(interval);
   }, [tab]);
 
   // Write to DB with 500 ms debounce
   const syncToServer = (checkedState) => {
-    console.log("[shopping] syncToServer called:", checkedState);
     if (syncTimeout.current) clearTimeout(syncTimeout.current);
     syncTimeout.current = setTimeout(() => {
-      console.log("[shopping] POSTing to server");
       fetch("/api/shopping", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(checkedState),
-      })
-        .then((r) => r.json())
-        .then((d) => console.log("[shopping] POST result:", d))
-        .catch((e) => console.error("[shopping] POST error:", e));
+      }).catch(() => {});
     }, 500);
   };
 
@@ -274,7 +268,6 @@ Calendar note for ${day}: ${
   };
 
   const toggleItem = (item) => {
-    console.log("[shopping] toggleItem:", item);
     const next = { ...checked, [item]: !checked[item] };
     setChecked(next);
     syncToServer(next);
