@@ -6,7 +6,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const ROW_KEY = "checked";
+const ROW_KEY = "plan";
 
 export async function GET() {
   const { data, error } = await supabase
@@ -16,11 +16,11 @@ export async function GET() {
     .maybeSingle();
 
   if (error) return NextResponse.json({}, { status: 500 });
-  return NextResponse.json((data?.value as Record<string, boolean>) ?? {});
+  return NextResponse.json(data?.value ?? {});
 }
 
 export async function POST(request: Request) {
-  const value: Record<string, boolean> = await request.json();
+  const value = await request.json();
 
   const { error } = await supabase
     .from("shopping_list")

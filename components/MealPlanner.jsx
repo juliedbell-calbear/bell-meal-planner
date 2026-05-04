@@ -143,26 +143,67 @@ export default function MealPlanner() {
   const [highlightDay, setHighlightDay] = useState(null);
 
   const syncTimeout = useRef(null);
+  const mealSyncTimeout = useRef(null);
 
-  // Fetch shared checked state whenever the shopping tab is opened
+  // Poll meal plan every 5 seconds while on the plan tab
   useEffect(() => {
-    if (tab === "shopping") {
-      fetch("/api/shopping")
+    if (tab !== "plan") return;
+
+    const sync = () =>
+      fetch("/api/meals")
         .then((r) => r.json())
-        .then((data) => setChecked(data))
+        .then((data) => {
+          if (data.meals) setMeals(data.meals);
+          if (data.notes) setNotes(data.notes);
+        })
         .catch(() => {});
-    }
+
+    sync();
+    const interval = setInterval(sync, 5000);
+    return () => clearInterval(interval);
   }, [tab]);
 
-  // Debounced write — waits 500 ms after the last tap before hitting the API
+  const syncMeals = (nextMeals, nextNotes) => {
+    if (mealSyncTimeout.current) clearTimeout(mealSyncTimeout.current);
+    mealSyncTimeout.current = setTimeout(() => {
+      fetch("/api/meals", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meals: nextMeals, notes: nextNotes }),
+      }).catch(() => {});
+    }, 500);
+  };
+
+  // Poll for updates every 2 seconds while on the shopping tab
+  useEffect(() => {
+    if (tab !== "shopping") return;
+    console.log("[shopping] tab opened, starting poll");
+
+    const sync = () =>
+      fetch("/api/shopping")
+        .then((r) => r.json())
+        .then((data) => { console.log("[shopping] poll received:", data); setChecked(data); })
+        .catch((e) => console.error("[shopping] poll error:", e));
+
+    sync();
+    const interval = setInterval(sync, 2000);
+    return () => { console.log("[shopping] poll stopped"); clearInterval(interval); };
+  }, [tab]);
+
+  // Write to DB with 500 ms debounce
   const syncToServer = (checkedState) => {
+    console.log("[shopping] syncToServer called:", checkedState);
     if (syncTimeout.current) clearTimeout(syncTimeout.current);
     syncTimeout.current = setTimeout(() => {
+      console.log("[shopping] POSTing to server");
       fetch("/api/shopping", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(checkedState),
-      }).catch(() => {});
+      })
+        .then((r) => r.json())
+        .then((d) => console.log("[shopping] POST result:", d))
+        .catch((e) => console.error("[shopping] POST error:", e));
     }, 500);
   };
 
@@ -177,11 +218,13 @@ export default function MealPlanner() {
   };
 
   const saveEdit = (day) => {
-    setMeals((m) => ({ ...m, [day]: inputVal }));
+    const nextMeals = { ...meals, [day]: inputVal };
+    setMeals(nextMeals);
     setEditingDay(null);
     setShowSuggestions(false);
     setBrowsing(false);
     setAiMeal(null);
+    syncMeals(nextMeals, notes);
   };
 
   const pickSuggestion = (s) => {
@@ -231,11 +274,10 @@ Calendar note for ${day}: ${
   };
 
   const toggleItem = (item) => {
-    setChecked((c) => {
-      const next = { ...c, [item]: !c[item] };
-      syncToServer(next);
-      return next;
-    });
+    console.log("[shopping] toggleItem:", item);
+    const next = { ...checked, [item]: !checked[item] };
+    setChecked(next);
+    syncToServer(next);
   };
 
   const addCustomItem = () => {
@@ -544,7 +586,11 @@ Calendar note for ${day}: ${
                       {/* Notes */}
                       <input
                         value={notes[day] || ""}
-                        onChange={(e) => setNotes((n) => ({ ...n, [day]: e.target.value }))}
+                        onChange={(e) => {
+                          const nextNotes = { ...notes, [day]: e.target.value };
+                          setNotes(nextNotes);
+                          syncMeals(meals, nextNotes);
+                        }}
                         placeholder="Add a note (guests, kids eating separately, etc.)"
                         style={{
                           marginTop: 8,
