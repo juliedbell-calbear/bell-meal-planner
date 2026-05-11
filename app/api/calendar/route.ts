@@ -149,5 +149,6 @@ export async function GET() {
     }
   }
 
+  console.log("[calendar] Final events:", JSON.stringify(events));
   return NextResponse.json(events);
 }
