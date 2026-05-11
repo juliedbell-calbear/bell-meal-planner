@@ -71,6 +71,8 @@ const EMPTY: EventMap = {
   Sunday: [],
 };
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REFRESH_TOKEN) {
     console.error("[calendar] Missing env vars");
@@ -150,5 +152,7 @@ export async function GET() {
   }
 
   console.log("[calendar] Final events:", JSON.stringify(events));
-  return NextResponse.json(events);
+  return NextResponse.json(events, {
+    headers: { "Cache-Control": "no-cache, no-store, must-revalidate" },
+  });
 }
