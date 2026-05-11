@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -29,34 +29,7 @@ const CALENDAR_EVENTS = {
   ],
 };
 
-const MEAL_SUGGESTIONS = [
-  "Spicy scallop hand rolls",
-  "Sashimi",
-  "Tacos",
-  "Pasta & sausage",
-  "Chicken tinga",
-  "Crispy chicken",
-  "Tri-tip & salad",
-  "Burgers",
-  "3 cup chicken",
-  "Shrimp stir fry",
-  "Pork pasta",
-  "Mac n cheese",
-  "Gnocchi w/ sausage",
-  "Chicken Caesar salad",
-  "Shrimp risotto",
-  "Turkey udon",
-  "Korean beef lettuce wraps",
-  "Steaks",
-  "Enchiladas",
-  "Pork pozole",
-  "Grilled chicken & salad",
-  "Fish tacos",
-  "Lamb skewers",
-  "White bean chicken chili",
-  "Crispy rice salmon salad",
-  "Chicken risotto",
-];
+const ALWAYS_BUY = ["garlic", "onions", "broccoli", "green beans", "bagels", "cream cheese", "eggs", "butter"];
 
 const AI_SUGGESTIONS = {
   Monday: { meal: "Tacos", note: "Easy weeknight after the weekend's hand rolls" },
@@ -81,52 +54,9 @@ const DEFAULT_MEALS = {
   Sunday: "",
 };
 
-const SHOPPING_CATEGORIES = {
-  Proteins: ["chicken breast (3 lbs)", "ground turkey (1 lb)", "sausage", "salmon", "shrimp"],
-  Produce: ["broccoli", "kale", "green beans", "avocado", "garlic", "onions"],
-  Pantry: ["pasta (penne)", "tortillas", "masa harina", "olive oil", "canned tomatoes"],
-  Dairy: ["parmesan", "cheddar (block)", "eggs", "butter", "cream cheese"],
-  Bakery: ["bagels", "sourdough"],
-};
-
-const generateShoppingList = (meals) => {
-  const items = new Set();
-  const mealText = Object.values(meals).join(" ").toLowerCase();
-
-  if (mealText.includes("taco")) {
-    ["ground turkey (1 lb)", "masa harina", "tortillas", "taco cheese", "salsa"].forEach((i) => items.add(i));
-  }
-  if (mealText.includes("pasta") || mealText.includes("penne")) {
-    ["penne pasta", "parmesan", "sausage"].forEach((i) => items.add(i));
-  }
-  if (mealText.includes("chicken")) {
-    items.add("chicken breast (3 lbs)");
-  }
-  if (mealText.includes("mac n cheese") || mealText.includes("mac")) {
-    ["cheddar (block)", "butter", "pasta"].forEach((i) => items.add(i));
-  }
-  if (mealText.includes("shrimp")) {
-    items.add("shrimp (1 lb)");
-  }
-  if (mealText.includes("salmon")) {
-    items.add("salmon");
-  }
-  if (mealText.includes("burger")) {
-    ["ground beef (2 lbs)", "burger buns", "cheddar slices"].forEach((i) => items.add(i));
-  }
-  if (mealText.includes("salad")) {
-    ["romaine / arugula", "parmesan"].forEach((i) => items.add(i));
-  }
-
-  // always
-  ["garlic", "onions", "broccoli", "green beans", "bagels", "cream cheese", "eggs", "butter"].forEach((i) =>
-    items.add(i)
-  );
-
-  return Array.from(items);
-};
 
 export default function MealPlanner() {
+  const [mealList, setMealList] = useState([]);
   const [meals, setMeals] = useState(DEFAULT_MEALS);
   const [notes, setNotes] = useState({});
   const [checked, setChecked] = useState({});
@@ -144,6 +74,25 @@ export default function MealPlanner() {
 
   const syncTimeout = useRef(null);
   const mealSyncTimeout = useRef(null);
+
+  // Load meal list from Supabase once on mount
+  useEffect(() => {
+    fetch("/api/meal-list")
+      .then((r) => r.json())
+      .then((data) => setMealList(data))
+      .catch(() => {});
+  }, []);
+
+  // Shopping list derived from planned meals + meal ingredients from Supabase
+  const shoppingList = useMemo(() => {
+    const ingredientMap = Object.fromEntries(mealList.map((m) => [m.name, m.ingredients ?? []]));
+    const items = new Set();
+    Object.values(meals).forEach((meal) => {
+      (ingredientMap[meal] ?? []).forEach((i) => items.add(i));
+    });
+    ALWAYS_BUY.forEach((i) => items.add(i));
+    return Array.from(items);
+  }, [meals, mealList]);
 
   // Poll meal plan every 5 seconds while on the plan tab
   useEffect(() => {
@@ -201,7 +150,7 @@ export default function MealPlanner() {
     }, 500);
   };
 
-  const shoppingList = generateShoppingList(meals);
+
 
   const startEdit = (day) => {
     setEditingDay(day);
@@ -284,9 +233,10 @@ Calendar note for ${day}: ${
   const hasAlert = (day) => dayEvents(day).some((e) => e.isOut || e.isMothersDay);
   const isMothersDay = (day) => dayEvents(day).some((e) => e.isMothersDay);
 
+  const mealNames = mealList.map((m) => m.name);
   const filteredSuggestions = browsing
-    ? MEAL_SUGGESTIONS.filter((s) => s !== inputVal)
-    : MEAL_SUGGESTIONS.filter(
+    ? mealNames.filter((s) => s !== inputVal)
+    : mealNames.filter(
         (s) => inputVal.length > 0 && s.toLowerCase().includes(inputVal.toLowerCase()) && s !== inputVal
       ).slice(0, 6);
 
