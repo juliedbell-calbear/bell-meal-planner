@@ -73,73 +73,81 @@ const EMPTY: EventMap = {
 
 export async function GET() {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REFRESH_TOKEN) {
+    console.error("[calendar] Missing env vars");
     return NextResponse.json(EMPTY);
   }
 
+  let accessToken: string;
   try {
-    const accessToken = await getAccessToken();
-    const monday = getMondayOfWeek();
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 7);
+    accessToken = await getAccessToken();
+  } catch (e) {
+    console.error("[calendar] Token error:", e);
+    return NextResponse.json(EMPTY);
+  }
 
-    const calendarIds = (
-      process.env.GOOGLE_CALENDAR_IDS || "primary"
-    )
-      .split(",")
-      .map((s) => s.trim());
+  const monday = getMondayOfWeek();
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 7);
 
-    const events: EventMap = {
-      Monday: [],
-      Tuesday: [],
-      Wednesday: [],
-      Thursday: [],
-      Friday: [],
-      Saturday: [],
-      Sunday: [],
-    };
+  const calendarIds = (process.env.GOOGLE_CALENDAR_IDS || "primary")
+    .split(",")
+    .map((s) => s.trim());
 
-    for (const calendarId of calendarIds) {
-      const url = new URL(
-        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
-      );
-      url.searchParams.set("timeMin", monday.toISOString());
-      url.searchParams.set("timeMax", sunday.toISOString());
-      url.searchParams.set("singleEvents", "true");
-      url.searchParams.set("orderBy", "startTime");
+  const events: EventMap = {
+    Monday: [],
+    Tuesday: [],
+    Wednesday: [],
+    Thursday: [],
+    Friday: [],
+    Saturday: [],
+    Sunday: [],
+  };
 
-      const res = await fetch(url.toString(), {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) continue;
+  for (const calendarId of calendarIds) {
+    const url = new URL(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
+    );
+    url.searchParams.set("timeMin", monday.toISOString());
+    url.searchParams.set("timeMax", sunday.toISOString());
+    url.searchParams.set("singleEvents", "true");
+    url.searchParams.set("orderBy", "startTime");
 
-      const data = await res.json();
-      for (const event of data.items ?? []) {
-        if (event.transparency === "transparent") continue;
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
 
-        const start = event.start?.dateTime || event.start?.date;
-        if (!start) continue;
-
-        // Skip all-day events unless they signal someone being out
-        const isAllDay = !event.start?.dateTime;
-        const title: string = event.summary || "";
-        if (isAllDay && !detectIsOut(title)) continue;
-
-        const tzOffset = "T12:00:00";
-        const date = new Date(start.includes("T") ? start : start + tzOffset);
-        const dayName = DAYS[date.getDay()];
-        if (!(dayName in events)) continue;
-
-        events[dayName].push({
-          time: event.start.dateTime ? formatTime(event.start.dateTime) : "All Day",
-          title,
-          who: detectWho(title),
-          isOut: detectIsOut(title),
-        });
-      }
+    if (!res.ok) {
+      const err = await res.text();
+      console.error(`[calendar] Failed to fetch calendar ${calendarId}:`, res.status, err);
+      continue;
     }
 
-    return NextResponse.json(events);
-  } catch {
-    return NextResponse.json(EMPTY);
+    const data = await res.json();
+    console.log(`[calendar] ${calendarId}: ${data.items?.length ?? 0} events`);
+
+    for (const event of data.items ?? []) {
+      if (event.transparency === "transparent") continue;
+
+      const start = event.start?.dateTime || event.start?.date;
+      if (!start) continue;
+
+      const isAllDay = !event.start?.dateTime;
+      const title: string = event.summary || "";
+      if (isAllDay && !detectIsOut(title)) continue;
+
+      const tzOffset = "T12:00:00";
+      const date = new Date(start.includes("T") ? start : start + tzOffset);
+      const dayName = DAYS[date.getDay()];
+      if (!(dayName in events)) continue;
+
+      events[dayName].push({
+        time: event.start.dateTime ? formatTime(event.start.dateTime) : "All Day",
+        title,
+        who: detectWho(title),
+        isOut: detectIsOut(title),
+      });
+    }
   }
+
+  return NextResponse.json(events);
 }
