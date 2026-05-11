@@ -5,54 +5,53 @@ import { useState, useEffect, useRef, useMemo } from "react";
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-// Calendar events from the Bell family calendar this week
-const CALENDAR_EVENTS = {
-  Monday: [],
-  Tuesday: [
-    { time: "4–6pm", title: "Sini staff training", who: "Julie" },
-  ],
-  Wednesday: [
-    { time: "3–7:30pm", title: "Joshua Track Meet", who: "Joshua" },
-    { time: "7:50am", title: "Wildwood Mileage Club", who: "Kids" },
-  ],
-  Thursday: [
-    { time: "7–9pm", title: "Chris: Dinner w Lisa", who: "Chris", isOut: true },
-  ],
-  Friday: [
-    { time: "3–7:30pm", title: "Joshua Track Meet", who: "Joshua" },
-    { time: "5–7pm", title: "Affinity End of Year", who: "Julie", isOut: true },
-  ],
-  Saturday: [],
-  Sunday: [
-    { time: "All Day", title: "Mother's Day 🌸", who: "Family", isMothersDay: true },
-    { time: "1pm", title: "E: Into the Woods", who: "E" },
-  ],
-};
-
 const ALWAYS_BUY = ["garlic", "onions", "broccoli", "green beans", "bagels", "cream cheese", "eggs", "butter"];
 
 const AI_SUGGESTIONS = {
-  Monday: { meal: "Tacos", note: "Easy weeknight after the weekend's hand rolls" },
-  Tuesday: { meal: "Crispy chicken", note: "Staff training til 6 — quick to execute" },
-  Wednesday: { meal: "Mac n cheese", note: "Joshua track meet til 7:30 — easy for kids" },
-  Thursday: { meal: "Pasta & sausage", note: "Chris is out — simple crowd pleaser" },
-  Friday: { meal: "Grilled chicken & salad", note: "Julie has Affinity event, keep it light" },
+  Monday: { meal: "Tacos", note: "Easy weeknight starter" },
+  Tuesday: { meal: "Crispy chicken", note: "Quick and crowd-pleasing" },
+  Wednesday: { meal: "Mac n cheese", note: "Midweek comfort food" },
+  Thursday: { meal: "Pasta & sausage", note: "Simple and satisfying" },
+  Friday: { meal: "Grilled chicken & salad", note: "Light finish to the week" },
   Saturday: { meal: "Pork pasta", note: "Weekend cook, family favorite" },
-  Sunday: {
-    meal: "Something special for Julie! 🌸",
-    note: "Mother's Day — make it a celebration",
-  },
+  Sunday: { meal: "Shrimp risotto", note: "Sunday special" },
 };
 
 const DEFAULT_MEALS = {
-  Monday: "Tacos",
-  Tuesday: "Crispy chicken",
-  Wednesday: "Mac n cheese",
-  Thursday: "Pasta & sausage",
-  Friday: "Grilled chicken & salad",
+  Monday: "",
+  Tuesday: "",
+  Wednesday: "",
+  Thursday: "",
+  Friday: "",
   Saturday: "",
   Sunday: "",
 };
+
+const DEFAULT_EVENTS = {
+  Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [], Saturday: [], Sunday: [],
+};
+
+function getWeekStart() {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diff);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
+
+function getWeekLabel() {
+  return getWeekStart().toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getWeekKey() {
+  return getWeekStart().toISOString().split("T")[0];
+}
 
 
 export default function MealPlanner() {
@@ -71,6 +70,7 @@ export default function MealPlanner() {
   const [aiMeal, setAiMeal] = useState(null);
   const [tab, setTab] = useState("plan"); // plan | shopping
   const [highlightDay, setHighlightDay] = useState(null);
+  const [calendarEvents, setCalendarEvents] = useState(DEFAULT_EVENTS);
 
   const syncTimeout = useRef(null);
   const mealSyncTimeout = useRef(null);
@@ -80,6 +80,14 @@ export default function MealPlanner() {
     fetch("/api/meal-list")
       .then((r) => r.json())
       .then((data) => setMealList(data))
+      .catch(() => {});
+  }, []);
+
+  // Load calendar events once on mount
+  useEffect(() => {
+    fetch("/api/calendar")
+      .then((r) => r.json())
+      .then((data) => setCalendarEvents(data))
       .catch(() => {});
   }, []);
 
@@ -102,6 +110,8 @@ export default function MealPlanner() {
       fetch("/api/meals")
         .then((r) => r.json())
         .then((data) => {
+          // If stored plan is from a previous week, ignore it and show a fresh week
+          if (data.weekKey && data.weekKey !== getWeekKey()) return;
           if (data.meals) setMeals(data.meals);
           if (data.notes) setNotes(data.notes);
         })
@@ -118,7 +128,7 @@ export default function MealPlanner() {
       fetch("/api/meals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ meals: nextMeals, notes: nextNotes }),
+        body: JSON.stringify({ meals: nextMeals, notes: nextNotes, weekKey: getWeekKey() }),
       }).catch(() => {});
     }, 500);
   };
@@ -179,12 +189,13 @@ export default function MealPlanner() {
   const askAI = async (day) => {
     setAiLoading(true);
     setAiMeal(null);
+    const dayCalEvents = calendarEvents[day] || [];
     const history = `Recent family meals: scallop hand rolls, sashimi, tacos, enchiladas, grilled chicken pasta.
 Family preferences: seafood (scallops, shrimp, salmon), Asian stir-fries (3 cup chicken, Korean beef wraps, turkey udon), Italian (pasta, gnocchi, risotto), tacos, burgers, crispy chicken.
 Dislikes: nothing noted. One picky eater (E) who sometimes gets separate food.
 Calendar note for ${day}: ${
-      CALENDAR_EVENTS[day]?.length
-        ? CALENDAR_EVENTS[day].map((e) => `${e.title} (${e.time})`).join(", ")
+      dayCalEvents.length
+        ? dayCalEvents.map((e) => `${e.title} (${e.time})`).join(", ")
         : "nothing special"
     }`;
 
@@ -229,9 +240,8 @@ Calendar note for ${day}: ${
     }
   };
 
-  const dayEvents = (day) => CALENDAR_EVENTS[day] || [];
-  const hasAlert = (day) => dayEvents(day).some((e) => e.isOut || e.isMothersDay);
-  const isMothersDay = (day) => dayEvents(day).some((e) => e.isMothersDay);
+  const dayEvents = (day) => calendarEvents[day] || [];
+  const hasAlert = (day) => dayEvents(day).some((e) => e.isOut);
 
   const mealNames = mealList.map((m) => m.name);
   const filteredSuggestions = browsing
@@ -258,7 +268,7 @@ Calendar note for ${day}: ${
             Bell Family
           </div>
           <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: -0.5 }}>Weekly Meal Planner</div>
-          <div style={{ fontSize: 12, color: "#b8a882", marginTop: 3 }}>Week of May 4, 2026</div>
+          <div style={{ fontSize: 12, color: "#b8a882", marginTop: 3 }}>Week of {getWeekLabel()}</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           {["plan", "shopping"].map((t) => (
@@ -287,32 +297,9 @@ Calendar note for ${day}: ${
 
       {tab === "plan" && (
         <div style={{ padding: "20px 16px", maxWidth: 680, margin: "0 auto" }}>
-          {/* Already planned note */}
-          <div
-            style={{
-              background: "#ede8dc",
-              border: "1px solid #d4c9b0",
-              borderRadius: 8,
-              padding: "10px 14px",
-              fontSize: 12,
-              color: "#6b5c3e",
-              marginBottom: 20,
-              display: "flex",
-              gap: 8,
-              alignItems: "flex-start",
-            }}
-          >
-            <span>📌</span>
-            <span>
-              <strong>Already planned:</strong> Monday — scallop hand rolls & sashimi, Tuesday — tacos. Filling in the
-              rest below.
-            </span>
-          </div>
-
           {DAYS.map((day, i) => {
             const events = dayEvents(day);
             const alert = hasAlert(day);
-            const special = isMothersDay(day);
             const isEditing = editingDay === day;
             const meal = meals[day];
 
@@ -320,8 +307,8 @@ Calendar note for ${day}: ${
               <div
                 key={day}
                 style={{
-                  background: special ? "#fff8f0" : "#fff",
-                  border: `1.5px solid ${special ? "#e8c080" : alert ? "#f0d8b8" : "#e8e0d0"}`,
+                  background: "#fff",
+                  border: `1.5px solid ${alert ? "#f0d8b8" : "#e8e0d0"}`,
                   borderRadius: 10,
                   marginBottom: 10,
                   overflow: "hidden",
@@ -343,7 +330,7 @@ Calendar note for ${day}: ${
                       width: 36,
                       height: 36,
                       borderRadius: "50%",
-                      background: special ? "#c8a96e" : "#2c2416",
+                      background: "#2c2416",
                       color: "#faf8f4",
                       display: "flex",
                       alignItems: "center",
@@ -364,12 +351,8 @@ Calendar note for ${day}: ${
                           <span
                             key={j}
                             style={{
-                              background: ev.isMothersDay
-                                ? "#fce8cc"
-                                : ev.isOut
-                                ? "#fde8e8"
-                                : "#e8f0e8",
-                              color: ev.isMothersDay ? "#8a5a00" : ev.isOut ? "#8a2020" : "#2a5a2a",
+                              background: ev.isOut ? "#fde8e8" : "#e8f0e8",
+                              color: ev.isOut ? "#8a2020" : "#2a5a2a",
                               fontSize: 10,
                               padding: "2px 7px",
                               borderRadius: 10,
@@ -377,7 +360,7 @@ Calendar note for ${day}: ${
                               letterSpacing: 0.3,
                             }}
                           >
-                            {ev.isOut ? `⚠️ ${ev.who} out` : ev.isMothersDay ? `🌸 ${ev.title}` : `📍 ${ev.title}`}
+                            {ev.isOut ? `⚠️ ${ev.who} out — ${ev.title}` : `📍 ${ev.title} (${ev.time})`}
                           </span>
                         ))}
                       </div>
