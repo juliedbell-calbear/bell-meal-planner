@@ -1,35 +1,35 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { kvGet, kvSet } from "@/lib/store";
+import { syncWithMealPlan, currentWeekKey } from "@/lib/shopping";
+
+export const dynamic = "force-dynamic";
 
 const ROW_KEY = "plan";
 
-function getClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
-}
+type Plan = {
+  meals?: Record<string, string>;
+  notes?: Record<string, string>;
+  weekKey?: string;
+};
 
 export async function GET() {
-  const supabase = getClient();
-  const { data, error } = await supabase
-    .from("shopping_list")
-    .select("value")
-    .eq("key", ROW_KEY)
-    .maybeSingle();
-
-  if (error) return NextResponse.json({}, { status: 500 });
-  return NextResponse.json(data?.value ?? {});
+  const plan = (await kvGet<Plan>(ROW_KEY)) ?? {};
+  return NextResponse.json(plan, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(request: Request) {
-  const supabase = getClient();
-  const value = await request.json();
+  const value: Plan = await request.json();
+  const ok = await kvSet(ROW_KEY, value);
 
-  const { error } = await supabase
-    .from("shopping_list")
-    .upsert({ key: ROW_KEY, value }, { onConflict: "key" });
+  // Keep the shopping list in step with the plan: add ingredients for
+  // planned meals, drop auto-added ones for meals taken off the plan.
+  if (value.weekKey === currentWeekKey() && value.meals) {
+    try {
+      await syncWithMealPlan(Object.values(value.meals));
+    } catch (e) {
+      console.error("[meals] shopping sync failed:", e);
+    }
+  }
 
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok });
 }

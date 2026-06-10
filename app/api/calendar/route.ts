@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function getMondayOfWeek() {
@@ -116,6 +118,7 @@ export async function GET() {
 
     const res = await fetch(url.toString(), {
       headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
     });
 
     if (!res.ok) {
@@ -139,9 +142,17 @@ export async function GET() {
 
       const tzOffset = "T12:00:00";
       const date = new Date(start.includes("T") ? start : start + tzOffset);
+
+      if (event.start.dateTime) {
+        // Google Calendar includes local time in the ISO string (e.g. "2026-05-13T09:00:00-07:00")
+        const localHour = parseInt(event.start.dateTime.substring(11, 13), 10);
+        if (localHour < 17) continue;
+      }
+
       const dayName = DAYS[date.getDay()];
       if (!(dayName in events)) continue;
 
+      console.log(`[calendar] KEEPING: "${title}" start=${event.start.dateTime || event.start.date}`);
       events[dayName].push({
         time: event.start.dateTime ? formatTime(event.start.dateTime) : "All Day",
         title,
@@ -151,5 +162,7 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json(events);
+  return NextResponse.json(events, {
+    headers: { "Cache-Control": "no-store" },
+  });
 }

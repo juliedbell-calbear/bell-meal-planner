@@ -1,0 +1,13 @@
+{
+  "name": "Bell Family Meal Planner",
+  "short_name": "Bell Meals",
+  "description": "Weekly dinners and the family shopping list",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf8f4",
+  "theme_color": "#2c2416",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -1,13 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
+import { CATEGORIES, CATEGORY_EMOJI } from "@/lib/categorize";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-const ALWAYS_BUY = ["garlic", "onions", "broccoli", "green beans", "bagels", "cream cheese", "eggs", "butter"];
-
-const AI_SUGGESTIONS = {
+const FALLBACK_SUGGESTIONS = {
   Monday: { meal: "Tacos", note: "Easy weeknight starter" },
   Tuesday: { meal: "Crispy chicken", note: "Quick and crowd-pleasing" },
   Wednesday: { meal: "Mac n cheese", note: "Midweek comfort food" },
@@ -18,13 +17,7 @@ const AI_SUGGESTIONS = {
 };
 
 const DEFAULT_MEALS = {
-  Monday: "",
-  Tuesday: "",
-  Wednesday: "",
-  Thursday: "",
-  Friday: "",
-  Saturday: "",
-  Sunday: "",
+  Monday: "", Tuesday: "", Wednesday: "", Thursday: "", Friday: "", Saturday: "", Sunday: "",
 };
 
 const DEFAULT_EVENTS = {
@@ -53,72 +46,65 @@ function getWeekKey() {
   return getWeekStart().toISOString().split("T")[0];
 }
 
+function todayName() {
+  return DAYS[(new Date().getDay() + 6) % 7];
+}
 
 export default function MealPlanner() {
   const [mealList, setMealList] = useState([]);
   const [meals, setMeals] = useState(DEFAULT_MEALS);
   const [notes, setNotes] = useState({});
-  const [checked, setChecked] = useState({});
-  const [customItems, setCustomItems] = useState([]);
+  const [items, setItems] = useState([]);
+  const [dbOk, setDbOk] = useState(true);
   const [newItem, setNewItem] = useState("");
-  const [activeDay, setActiveDay] = useState("Monday");
   const [editingDay, setEditingDay] = useState(null);
   const [inputVal, setInputVal] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [browsing, setBrowsing] = useState(false); // true = show all favorites, false = filter by input
+  const [browsing, setBrowsing] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiMeal, setAiMeal] = useState(null);
-  const [tab, setTab] = useState("plan"); // plan | shopping
-  const [highlightDay, setHighlightDay] = useState(null);
+  const [tab, setTab] = useState("plan"); // plan | shopping | menu
   const [calendarEvents, setCalendarEvents] = useState(DEFAULT_EVENTS);
 
-  const syncTimeout = useRef(null);
+  // Recipe importer state
+  const [recipeOpen, setRecipeOpen] = useState(false);
+  const [recipeInput, setRecipeInput] = useState("");
+  const [recipeLoading, setRecipeLoading] = useState(false);
+  const [recipeError, setRecipeError] = useState("");
+  const [recipeParsed, setRecipeParsed] = useState(null); // {name, ingredients}
+  const [recipeSaved, setRecipeSaved] = useState(false);
+  const [newIngredient, setNewIngredient] = useState("");
+
   const mealSyncTimeout = useRef(null);
 
-  // Load meal list from Supabase once on mount
-  useEffect(() => {
+  const loadMealList = () =>
     fetch("/api/meal-list")
       .then((r) => r.json())
-      .then((data) => setMealList(data))
+      .then((data) => setMealList(data.meals ?? []))
       .catch(() => {});
-  }, []);
 
-  // Load calendar events once on mount
   useEffect(() => {
+    loadMealList();
     fetch("/api/calendar")
       .then((r) => r.json())
       .then((data) => setCalendarEvents(data))
       .catch(() => {});
   }, []);
 
-  // Shopping list derived from planned meals + meal ingredients from Supabase
-  const shoppingList = useMemo(() => {
-    const ingredientMap = Object.fromEntries(mealList.map((m) => [m.name, m.ingredients ?? []]));
-    const items = new Set();
-    Object.values(meals).forEach((meal) => {
-      (ingredientMap[meal] ?? []).forEach((i) => items.add(i));
-    });
-    ALWAYS_BUY.forEach((i) => items.add(i));
-    return Array.from(items);
-  }, [meals, mealList]);
-
-  // Poll meal plan every 5 seconds while on the plan tab
+  // Poll the meal plan while on the plan or menu tab
   useEffect(() => {
-    if (tab !== "plan") return;
-
+    if (tab !== "plan" && tab !== "menu") return;
     const sync = () =>
       fetch("/api/meals")
         .then((r) => r.json())
         .then((data) => {
-          // If stored plan is from a previous week, ignore it and show a fresh week
           if (data.weekKey && data.weekKey !== getWeekKey()) return;
           if (data.meals) setMeals(data.meals);
           if (data.notes) setNotes(data.notes);
         })
         .catch(() => {});
-
     sync();
-    const interval = setInterval(sync, 5000);
+    const interval = setInterval(sync, tab === "menu" ? 20000 : 5000);
     return () => clearInterval(interval);
   }, [tab]);
 
@@ -133,34 +119,51 @@ export default function MealPlanner() {
     }, 500);
   };
 
-  // Poll for updates every 2 seconds while on the shopping tab
+  // Poll the shared shopping list while on the shopping tab
   useEffect(() => {
     if (tab !== "shopping") return;
-
     const sync = () =>
       fetch("/api/shopping")
         .then((r) => r.json())
-        .then((data) => setChecked(data))
+        .then((data) => {
+          if (Array.isArray(data.items)) setItems(data.items);
+          if (typeof data.dbOk === "boolean") setDbOk(data.dbOk);
+        })
         .catch(() => {});
-
     sync();
-    const interval = setInterval(sync, 2000);
+    const interval = setInterval(sync, 3000);
     return () => clearInterval(interval);
   }, [tab]);
 
-  // Write to DB with 500 ms debounce
-  const syncToServer = (checkedState) => {
-    if (syncTimeout.current) clearTimeout(syncTimeout.current);
-    syncTimeout.current = setTimeout(() => {
-      fetch("/api/shopping", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(checkedState),
-      }).catch(() => {});
-    }, 500);
+  const shoppingAction = (payload) =>
+    fetch("/api/shopping", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data.items)) setItems(data.items);
+        if (typeof data.dbOk === "boolean") setDbOk(data.dbOk);
+      })
+      .catch(() => {});
+
+  const toggleItem = (id) => {
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, checked: !i.checked } : i)));
+    shoppingAction({ action: "toggle", id });
   };
 
+  const removeItem = (id) => {
+    setItems((prev) => prev.filter((i) => i.id !== id));
+    shoppingAction({ action: "remove", id });
+  };
 
+  const addCustomItem = () => {
+    const name = newItem.trim();
+    if (!name) return;
+    setNewItem("");
+    shoppingAction({ action: "add", names: [name] });
+  };
 
   const startEdit = (day) => {
     setEditingDay(day);
@@ -190,54 +193,85 @@ export default function MealPlanner() {
     setAiLoading(true);
     setAiMeal(null);
     const dayCalEvents = calendarEvents[day] || [];
-    const history = `Recent family meals: scallop hand rolls, sashimi, tacos, enchiladas, grilled chicken pasta.
-Family preferences: seafood (scallops, shrimp, salmon), Asian stir-fries (3 cup chicken, Korean beef wraps, turkey udon), Italian (pasta, gnocchi, risotto), tacos, burgers, crispy chicken.
-Dislikes: nothing noted. One picky eater (E) who sometimes gets separate food.
-Calendar note for ${day}: ${
-      dayCalEvents.length
-        ? dayCalEvents.map((e) => `${e.title} (${e.time})`).join(", ")
-        : "nothing special"
-    }`;
-
+    const calendarNote = dayCalEvents.length
+      ? dayCalEvents.map((e) => `${e.title} (${e.time})`).join(", ")
+      : "";
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/suggest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 200,
-          messages: [
-            {
-              role: "user",
-              content: `${history}\n\nSuggest ONE meal for ${day} this week. Consider the calendar events. Reply ONLY in this JSON: {"meal": "...", "note": "..."}`,
-            },
-          ],
+          day,
+          calendarNote,
+          alreadyPlanned: Object.values(meals).filter(Boolean),
         }),
       });
       const data = await res.json();
-      const text = data.content?.find((b) => b.type === "text")?.text || "{}";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      setAiMeal(parsed);
-      setInputVal(parsed.meal);
+      if (data.meal) {
+        setAiMeal(data);
+        setInputVal(data.meal);
+      } else {
+        throw new Error("no suggestion");
+      }
     } catch {
-      setAiMeal({ meal: AI_SUGGESTIONS[day]?.meal || "Tacos", note: AI_SUGGESTIONS[day]?.note || "" });
-      setInputVal(AI_SUGGESTIONS[day]?.meal || "Tacos");
+      const fb = FALLBACK_SUGGESTIONS[day] || FALLBACK_SUGGESTIONS.Monday;
+      setAiMeal(fb);
+      setInputVal(fb.meal);
     }
     setAiLoading(false);
   };
 
-  const toggleItem = (item) => {
-    const next = { ...checked, [item]: !checked[item] };
-    setChecked(next);
-    syncToServer(next);
+  // ---- Recipe importer ----
+  const parseRecipe = async () => {
+    const input = recipeInput.trim();
+    if (!input) return;
+    setRecipeLoading(true);
+    setRecipeError("");
+    setRecipeParsed(null);
+    setRecipeSaved(false);
+    const isLink = /^https?:\/\/\S+$/i.test(input);
+    try {
+      const res = await fetch("/api/recipes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(isLink ? { url: input } : { text: input }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Couldn't read that recipe");
+      setRecipeParsed({ name: data.name, ingredients: data.ingredients });
+    } catch (e) {
+      setRecipeError(e.message || "Couldn't read that recipe");
+    }
+    setRecipeLoading(false);
   };
 
-  const addCustomItem = () => {
-    if (newItem.trim()) {
-      setCustomItems((ci) => [...ci, newItem.trim()]);
-      setNewItem("");
+  const saveRecipe = async () => {
+    if (!recipeParsed?.name) return;
+    setRecipeLoading(true);
+    setRecipeError("");
+    try {
+      const res = await fetch("/api/recipes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ save: recipeParsed }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Couldn't save");
+      setRecipeSaved(true);
+      loadMealList();
+    } catch (e) {
+      setRecipeError(e.message || "Couldn't save");
     }
+    setRecipeLoading(false);
+  };
+
+  const closeRecipe = () => {
+    setRecipeOpen(false);
+    setRecipeInput("");
+    setRecipeParsed(null);
+    setRecipeError("");
+    setRecipeSaved(false);
+    setNewIngredient("");
   };
 
   const dayEvents = (day) => calendarEvents[day] || [];
@@ -246,9 +280,38 @@ Calendar note for ${day}: ${
   const mealNames = mealList.map((m) => m.name);
   const filteredSuggestions = browsing
     ? mealNames.filter((s) => s !== inputVal)
-    : mealNames.filter(
-        (s) => inputVal.length > 0 && s.toLowerCase().includes(inputVal.toLowerCase()) && s !== inputVal
-      ).slice(0, 6);
+    : mealNames
+        .filter(
+          (s) => inputVal.length > 0 && s.toLowerCase().includes(inputVal.toLowerCase()) && s !== inputVal
+        )
+        .slice(0, 6);
+
+  const checkedCount = items.filter((i) => i.checked).length;
+  const itemsByCategory = useMemo(() => {
+    const groups = {};
+    for (const cat of CATEGORIES) groups[cat] = [];
+    for (const item of items) {
+      (groups[item.category] || groups.Other).push(item);
+    }
+    for (const cat of CATEGORIES) {
+      groups[cat].sort((a, b) => (a.checked === b.checked ? 0 : a.checked ? 1 : -1));
+    }
+    return groups;
+  }, [items]);
+
+  const btnStyle = (active) => ({
+    background: active ? "#c8a96e" : "transparent",
+    color: active ? "#2c2416" : "#b8a882",
+    border: `1px solid ${active ? "#c8a96e" : "#4a3f2e"}`,
+    borderRadius: 20,
+    padding: "6px 12px",
+    fontSize: 12,
+    fontFamily: "inherit",
+    cursor: "pointer",
+    letterSpacing: 0.5,
+    fontWeight: active ? 700 : 400,
+    whiteSpace: "nowrap",
+  });
 
   return (
     <div style={{ fontFamily: "'Georgia', serif", minHeight: "100vh", background: "#faf8f4", color: "#2c2416" }}>
@@ -257,44 +320,137 @@ Calendar note for ${day}: ${
         style={{
           background: "#2c2416",
           color: "#faf8f4",
-          padding: "24px 28px 20px",
+          padding: "20px 16px 16px",
           display: "flex",
           alignItems: "flex-end",
           justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 10,
         }}
       >
         <div>
           <div style={{ fontSize: 11, letterSpacing: 3, textTransform: "uppercase", color: "#b8a882", marginBottom: 4 }}>
             Bell Family
           </div>
-          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: -0.5 }}>Weekly Meal Planner</div>
+          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Weekly Meal Planner</div>
           <div style={{ fontSize: 12, color: "#b8a882", marginTop: 3 }}>Week of {getWeekLabel()}</div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {["plan", "shopping"].map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              style={{
-                background: tab === t ? "#c8a96e" : "transparent",
-                color: tab === t ? "#2c2416" : "#b8a882",
-                border: `1px solid ${tab === t ? "#c8a96e" : "#4a3f2e"}`,
-                borderRadius: 20,
-                padding: "6px 16px",
-                fontSize: 12,
-                fontFamily: "inherit",
-                cursor: "pointer",
-                letterSpacing: 1,
-                textTransform: "capitalize",
-                fontWeight: tab === t ? 700 : 400,
-              }}
-            >
-              {t === "shopping" ? "🛒 Shopping" : "📅 Meal Plan"}
-            </button>
-          ))}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => setTab("menu")} style={btnStyle(tab === "menu")}>🍽️ Menu</button>
+          <button onClick={() => setTab("plan")} style={btnStyle(tab === "plan")}>📅 Plan</button>
+          <button onClick={() => setTab("shopping")} style={btnStyle(tab === "shopping")}>🛒 Shopping</button>
         </div>
       </div>
 
+      {!dbOk && tab === "shopping" && (
+        <div
+          style={{
+            background: "#fdecec",
+            color: "#8a2020",
+            fontSize: 12,
+            padding: "8px 16px",
+            textAlign: "center",
+          }}
+        >
+          ⚠️ Can't reach the family database — changes may only show on this device.
+        </div>
+      )}
+
+      {/* ============ MENU (blackboard) ============ */}
+      {tab === "menu" && (
+        <div style={{ padding: "20px 12px 40px", maxWidth: 560, margin: "0 auto" }}>
+          <div
+            style={{
+              background: "#28332c",
+              backgroundImage:
+                "radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.05), transparent 60%), radial-gradient(ellipse at 70% 80%, rgba(255,255,255,0.04), transparent 50%)",
+              border: "12px solid #7a5230",
+              borderRadius: 8,
+              boxShadow: "0 6px 24px rgba(0,0,0,0.35), inset 0 0 60px rgba(0,0,0,0.45)",
+              padding: "28px 20px 32px",
+              fontFamily: "'Chalkboard SE', 'Comic Sans MS', 'Segoe Print', cursive",
+              color: "#f4f0e4",
+            }}
+          >
+            <div style={{ textAlign: "center", marginBottom: 4 }}>
+              <div style={{ fontSize: 13, letterSpacing: 3, color: "#d8cfae", opacity: 0.85 }}>
+                ✦ BELL FAMILY ✦
+              </div>
+              <div style={{ fontSize: 30, fontWeight: 700, marginTop: 2, textShadow: "0 0 6px rgba(244,240,228,0.25)" }}>
+                This Week's Menu
+              </div>
+              <div
+                style={{
+                  width: 160,
+                  height: 3,
+                  margin: "10px auto 18px",
+                  background: "#f4f0e4",
+                  opacity: 0.5,
+                  borderRadius: 3,
+                  transform: "rotate(-0.5deg)",
+                }}
+              />
+            </div>
+
+            {DAYS.map((day) => {
+              const isToday = day === todayName();
+              const meal = meals[day];
+              return (
+                <div
+                  key={day}
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 12,
+                    padding: "9px 10px",
+                    marginBottom: 4,
+                    borderRadius: 8,
+                    background: isToday ? "rgba(244,228,160,0.12)" : "transparent",
+                    border: isToday ? "1.5px dashed rgba(244,228,160,0.55)" : "1.5px dashed transparent",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 86,
+                      flexShrink: 0,
+                      fontSize: 15,
+                      color: isToday ? "#f4e4a0" : "#cfd8c4",
+                      letterSpacing: 1,
+                    }}
+                  >
+                    {day.toUpperCase().slice(0, 3)}
+                    {isToday && <span style={{ fontSize: 10, marginLeft: 5 }}>★</span>}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: meal ? 21 : 16,
+                      fontWeight: meal ? 700 : 400,
+                      color: meal ? "#fdfaf0" : "rgba(244,240,228,0.35)",
+                      lineHeight: 1.25,
+                    }}
+                  >
+                    {meal || "chef's choice…"}
+                    {notes[day] && meal && (
+                      <span style={{ fontSize: 12, fontWeight: 400, color: "#d8cfae", marginLeft: 8 }}>
+                        ({notes[day]})
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            <div style={{ textAlign: "center", marginTop: 18, fontSize: 13, color: "#d8cfae", opacity: 0.7 }}>
+              ~ bon appétit ~
+            </div>
+          </div>
+          <div style={{ textAlign: "center", fontSize: 11, color: "#b8a882", marginTop: 12 }}>
+            Updates by itself when the plan changes
+          </div>
+        </div>
+      )}
+
+      {/* ============ PLAN ============ */}
       {tab === "plan" && (
         <div style={{ padding: "20px 16px", maxWidth: 680, margin: "0 auto" }}>
           {DAYS.map((day, i) => {
@@ -315,7 +471,6 @@ Calendar note for ${day}: ${
                   boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
                 }}
               >
-                {/* Day Header */}
                 <div
                   style={{
                     display: "flex",
@@ -368,7 +523,6 @@ Calendar note for ${day}: ${
                   </div>
                 </div>
 
-                {/* Meal Area */}
                 <div style={{ padding: "10px 14px 12px" }}>
                   {isEditing ? (
                     <div>
@@ -421,8 +575,6 @@ Calendar note for ${day}: ${
                                   cursor: "pointer",
                                   borderBottom: "1px solid #f0ece4",
                                 }}
-                                onMouseEnter={(e) => (e.target.style.background = "#faf6ee")}
-                                onMouseLeave={(e) => (e.target.style.background = "transparent")}
                               >
                                 {s}
                               </div>
@@ -509,7 +661,6 @@ Calendar note for ${day}: ${
                           Cancel
                         </button>
                       </div>
-                      {/* Notes */}
                       <input
                         value={notes[day] || ""}
                         onChange={(e) => {
@@ -564,7 +715,238 @@ Calendar note for ${day}: ${
             );
           })}
 
-          {/* Quick tip */}
+          {/* Add recipe */}
+          {!recipeOpen ? (
+            <button
+              onClick={() => setRecipeOpen(true)}
+              style={{
+                display: "block",
+                width: "100%",
+                background: "#fff",
+                border: "1.5px dashed #c8a96e",
+                borderRadius: 10,
+                padding: "14px",
+                fontSize: 14,
+                fontFamily: "inherit",
+                color: "#6b5c3e",
+                cursor: "pointer",
+                marginTop: 6,
+              }}
+            >
+              📖 Add a recipe — paste a link or the recipe itself
+            </button>
+          ) : (
+            <div
+              style={{
+                background: "#fff",
+                border: "1.5px solid #c8a96e",
+                borderRadius: 10,
+                padding: "14px",
+                marginTop: 6,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <strong style={{ fontSize: 14 }}>📖 Add a recipe</strong>
+                <button
+                  onClick={closeRecipe}
+                  style={{ background: "transparent", border: "none", color: "#aaa", cursor: "pointer", fontSize: 14, fontFamily: "inherit" }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {!recipeParsed && (
+                <>
+                  <textarea
+                    value={recipeInput}
+                    onChange={(e) => setRecipeInput(e.target.value)}
+                    placeholder={"Paste a recipe link (https://...)\nor copy & paste the whole recipe here"}
+                    rows={4}
+                    style={{
+                      width: "100%",
+                      border: "1px solid #d4c9b0",
+                      borderRadius: 6,
+                      padding: "8px 10px",
+                      fontSize: 13,
+                      fontFamily: "inherit",
+                      background: "#fffdf8",
+                      outline: "none",
+                      boxSizing: "border-box",
+                      resize: "vertical",
+                    }}
+                  />
+                  <button
+                    onClick={parseRecipe}
+                    disabled={recipeLoading || !recipeInput.trim()}
+                    style={{
+                      marginTop: 8,
+                      background: recipeLoading ? "#e8e0d0" : "#2c2416",
+                      color: recipeLoading ? "#aaa" : "#faf8f4",
+                      border: "none",
+                      borderRadius: 6,
+                      padding: "8px 18px",
+                      fontSize: 13,
+                      fontFamily: "inherit",
+                      cursor: recipeLoading ? "default" : "pointer",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {recipeLoading ? "Reading recipe..." : "Read recipe"}
+                  </button>
+                </>
+              )}
+
+              {recipeParsed && (
+                <div>
+                  <label style={{ fontSize: 11, color: "#9a8a6e", letterSpacing: 1, textTransform: "uppercase" }}>
+                    Name
+                  </label>
+                  <input
+                    value={recipeParsed.name}
+                    onChange={(e) => setRecipeParsed({ ...recipeParsed, name: e.target.value })}
+                    style={{
+                      width: "100%",
+                      border: "1px solid #d4c9b0",
+                      borderRadius: 6,
+                      padding: "8px 10px",
+                      fontSize: 14,
+                      fontFamily: "inherit",
+                      background: "#fffdf8",
+                      outline: "none",
+                      boxSizing: "border-box",
+                      marginBottom: 10,
+                      marginTop: 4,
+                    }}
+                  />
+                  <label style={{ fontSize: 11, color: "#9a8a6e", letterSpacing: 1, textTransform: "uppercase" }}>
+                    Shopping list ingredients ({recipeParsed.ingredients.length})
+                  </label>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "6px 0 10px" }}>
+                    {recipeParsed.ingredients.map((ing, idx) => (
+                      <span
+                        key={idx}
+                        style={{
+                          background: "#f4efe4",
+                          border: "1px solid #e0d8c8",
+                          borderRadius: 14,
+                          padding: "4px 10px",
+                          fontSize: 12,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        {ing}
+                        <span
+                          onClick={() =>
+                            setRecipeParsed({
+                              ...recipeParsed,
+                              ingredients: recipeParsed.ingredients.filter((_, j) => j !== idx),
+                            })
+                          }
+                          style={{ cursor: "pointer", color: "#b09a70", fontWeight: 700 }}
+                        >
+                          ✕
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+                    <input
+                      value={newIngredient}
+                      onChange={(e) => setNewIngredient(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newIngredient.trim()) {
+                          setRecipeParsed({
+                            ...recipeParsed,
+                            ingredients: [...recipeParsed.ingredients, newIngredient.trim()],
+                          });
+                          setNewIngredient("");
+                        }
+                      }}
+                      placeholder="Add an ingredient..."
+                      style={{
+                        flex: 1,
+                        border: "1px solid #e0d8c8",
+                        borderRadius: 6,
+                        padding: "6px 10px",
+                        fontSize: 12,
+                        fontFamily: "inherit",
+                        outline: "none",
+                      }}
+                    />
+                  </div>
+
+                  {recipeSaved ? (
+                    <div style={{ fontSize: 13, color: "#2a5a2a", background: "#e8f0e8", borderRadius: 6, padding: "10px 12px" }}>
+                      ✓ Saved to favorites! Plan it on any day and the ingredients go straight to the
+                      shopping list.
+                      <button
+                        onClick={() => {
+                          shoppingAction({ action: "add", names: recipeParsed.ingredients });
+                          closeRecipe();
+                          setTab("shopping");
+                        }}
+                        style={{
+                          display: "block",
+                          marginTop: 8,
+                          background: "#2a5a2a",
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "7px 12px",
+                          fontSize: 12,
+                          fontFamily: "inherit",
+                          cursor: "pointer",
+                        }}
+                      >
+                        🛒 Also add ingredients to this week's list now
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        onClick={saveRecipe}
+                        disabled={recipeLoading}
+                        style={{
+                          background: "#2c2416",
+                          color: "#faf8f4",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "8px 18px",
+                          fontSize: 13,
+                          fontFamily: "inherit",
+                          cursor: "pointer",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {recipeLoading ? "Saving..." : "Save to favorites"}
+                      </button>
+                      <button
+                        onClick={() => setRecipeParsed(null)}
+                        style={{
+                          background: "transparent",
+                          color: "#6b5c3e",
+                          border: "1px solid #d4c9b0",
+                          borderRadius: 6,
+                          padding: "8px 12px",
+                          fontSize: 13,
+                          fontFamily: "inherit",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Start over
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              {recipeError && (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#8a2020" }}>⚠️ {recipeError}</div>
+              )}
+            </div>
+          )}
+
           <div
             style={{
               textAlign: "center",
@@ -574,20 +956,21 @@ Calendar note for ${day}: ${
               letterSpacing: 0.5,
             }}
           >
-            Tap any day to edit • ✨ Ask AI pulls suggestions from your family's history
+            Tap any day to edit • Planned dinners add their ingredients to the shopping list
           </div>
         </div>
       )}
 
+      {/* ============ SHOPPING ============ */}
       {tab === "shopping" && (
-        <div style={{ padding: "20px 16px", maxWidth: 680, margin: "0 auto" }}>
+        <div style={{ padding: "20px 16px 60px", maxWidth: 680, margin: "0 auto" }}>
           {/* This week's meals summary */}
           <div
             style={{
               background: "#2c2416",
               borderRadius: 10,
               padding: "12px 16px",
-              marginBottom: 16,
+              marginBottom: 14,
               color: "#faf8f4",
             }}
           >
@@ -615,91 +998,23 @@ Calendar note for ${day}: ${
             </div>
           </div>
 
-          {/* Auto-generated list */}
-          <div style={{ marginBottom: 20 }}>
-            <div
-              style={{
-                fontSize: 11,
-                letterSpacing: 2,
-                textTransform: "uppercase",
-                color: "#6b5c3e",
-                marginBottom: 10,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span>Shopping List</span>
-              <span style={{ fontSize: 10, color: "#b8a882" }}>
-                {Object.values(checked).filter(Boolean).length} / {shoppingList.length + customItems.length} checked
-              </span>
-            </div>
-
-            {[...shoppingList, ...customItems].map((item) => (
-              <div
-                key={item}
-                onClick={() => toggleItem(item)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "11px 14px",
-                  background: checked[item] ? "#f0ece4" : "#fff",
-                  border: "1px solid #e8e0d0",
-                  borderRadius: 8,
-                  marginBottom: 6,
-                  cursor: "pointer",
-                  transition: "all 0.15s",
-                }}
-              >
-                <div
-                  style={{
-                    width: 20,
-                    height: 20,
-                    borderRadius: "50%",
-                    border: `2px solid ${checked[item] ? "#c8a96e" : "#d4c9b0"}`,
-                    background: checked[item] ? "#c8a96e" : "transparent",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                    color: "#fff",
-                    fontSize: 11,
-                    fontWeight: 700,
-                  }}
-                >
-                  {checked[item] ? "✓" : ""}
-                </div>
-                <span
-                  style={{
-                    fontSize: 14,
-                    flex: 1,
-                    textDecoration: checked[item] ? "line-through" : "none",
-                    color: checked[item] ? "#b8a882" : "#2c2416",
-                  }}
-                >
-                  {item}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Add custom item */}
+          {/* Add item — everyone can add all week */}
           <div
             style={{
               background: "#fff",
-              border: "1.5px dashed #d4c9b0",
+              border: "1.5px dashed #c8a96e",
               borderRadius: 8,
               padding: "10px 14px",
               display: "flex",
               gap: 8,
+              marginBottom: 16,
             }}
           >
             <input
               value={newItem}
               onChange={(e) => setNewItem(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addCustomItem()}
-              placeholder="Add item..."
+              placeholder="Need something? Add it here..."
               style={{
                 flex: 1,
                 border: "none",
@@ -728,14 +1043,122 @@ Calendar note for ${day}: ${
             </button>
           </div>
 
-          {/* Clear checked */}
-          {Object.values(checked).some(Boolean) && (
+          <div
+            style={{
+              fontSize: 11,
+              letterSpacing: 2,
+              textTransform: "uppercase",
+              color: "#6b5c3e",
+              marginBottom: 10,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>Shopping List</span>
+            <span style={{ fontSize: 10, color: "#b8a882" }}>
+              {checkedCount} / {items.length} in the cart
+            </span>
+          </div>
+
+          {items.length === 0 && (
+            <div style={{ fontSize: 13, color: "#b8a882", fontStyle: "italic", textAlign: "center", padding: 20 }}>
+              Nothing yet — plan some dinners or add items above.
+            </div>
+          )}
+
+          {CATEGORIES.map((cat) => {
+            const group = itemsByCategory[cat] || [];
+            if (group.length === 0) return null;
+            return (
+              <div key={cat} style={{ marginBottom: 14 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: "#6b5c3e",
+                    margin: "0 0 6px 2px",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  {CATEGORY_EMOJI[cat]} {cat}
+                  <span style={{ fontWeight: 400, color: "#b8a882", marginLeft: 6, fontSize: 11 }}>
+                    {group.filter((i) => i.checked).length}/{group.length}
+                  </span>
+                </div>
+                {group.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "10px 12px",
+                      background: item.checked ? "#f0ece4" : "#fff",
+                      border: "1px solid #e8e0d0",
+                      borderRadius: 8,
+                      marginBottom: 5,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <div
+                      onClick={() => toggleItem(item.id)}
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: "50%",
+                        border: `2px solid ${item.checked ? "#c8a96e" : "#d4c9b0"}`,
+                        background: item.checked ? "#c8a96e" : "transparent",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        color: "#fff",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {item.checked ? "✓" : ""}
+                    </div>
+                    <span
+                      onClick={() => toggleItem(item.id)}
+                      style={{
+                        fontSize: 14,
+                        flex: 1,
+                        cursor: "pointer",
+                        textDecoration: item.checked ? "line-through" : "none",
+                        color: item.checked ? "#b8a882" : "#2c2416",
+                      }}
+                    >
+                      {item.name}
+                      {item.meal && (
+                        <span style={{ fontSize: 10, color: "#b8a882", marginLeft: 7 }}>
+                          {item.meal}
+                        </span>
+                      )}
+                    </span>
+                    <span
+                      onClick={() => removeItem(item.id)}
+                      style={{
+                        color: "#d4c9b0",
+                        cursor: "pointer",
+                        fontSize: 14,
+                        padding: "0 4px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      ✕
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+
+          {checkedCount > 0 && (
             <button
-              onClick={() => {
-                const empty = {};
-                setChecked(empty);
-                syncToServer(empty);
-              }}
+              onClick={() => shoppingAction({ action: "uncheckAll" })}
               style={{
                 display: "block",
                 margin: "16px auto 0",
@@ -748,7 +1171,7 @@ Calendar note for ${day}: ${
                 textDecoration: "underline",
               }}
             >
-              Clear all checks
+              Uncheck everything
             </button>
           )}
         </div>

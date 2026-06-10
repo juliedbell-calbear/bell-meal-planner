@@ -1,35 +1,54 @@
-import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { getList, saveList, addItems } from "@/lib/shopping";
+import { dbOk } from "@/lib/store";
 
-const ROW_KEY = "checked";
+export const dynamic = "force-dynamic";
 
-function getClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+export async function GET() {
+  const list = await getList();
+  return NextResponse.json(
+    { items: list.items, weekKey: list.weekKey, dbOk: dbOk() },
+    { headers: { "Cache-Control": "no-store" } }
   );
 }
 
-export async function GET() {
-  const supabase = getClient();
-  const { data, error } = await supabase
-    .from("shopping_list")
-    .select("value")
-    .eq("key", ROW_KEY)
-    .maybeSingle();
-
-  if (error) return NextResponse.json({}, { status: 500 });
-  return NextResponse.json((data?.value as Record<string, boolean>) ?? {});
-}
-
+// Action-based updates (instead of clobbering the whole list) so two phones
+// editing at once don't wipe each other's changes.
 export async function POST(request: Request) {
-  const supabase = getClient();
-  const value: Record<string, boolean> = await request.json();
+  const body = await request.json();
+  const list = await getList();
 
-  const { error } = await supabase
-    .from("shopping_list")
-    .upsert({ key: ROW_KEY, value }, { onConflict: "key" });
+  switch (body.action) {
+    case "add": {
+      const names: string[] = Array.isArray(body.names) ? body.names : [body.name];
+      addItems(list, names.filter(Boolean), "manual", { addedBy: body.addedBy });
+      break;
+    }
+    case "toggle": {
+      const item = list.items.find((i) => i.id === body.id);
+      if (item) item.checked = !item.checked;
+      break;
+    }
+    case "remove": {
+      const item = list.items.find((i) => i.id === body.id);
+      if (item) {
+        list.items = list.items.filter((i) => i.id !== body.id);
+        if (item.source === "meal") {
+          // remember the deletion so the meal-plan sync doesn't re-add it
+          const norm = item.name.trim().toLowerCase();
+          if (!list.removedNames.includes(norm)) list.removedNames.push(norm);
+        }
+      }
+      break;
+    }
+    case "uncheckAll": {
+      list.items.forEach((i) => (i.checked = false));
+      break;
+    }
+    default:
+      return NextResponse.json({ ok: false, error: "unknown action" }, { status: 400 });
+  }
 
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  await saveList(list);
+  return NextResponse.json({ ok: true, items: list.items, dbOk: dbOk() });
 }
