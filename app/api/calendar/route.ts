@@ -26,7 +26,12 @@ async function getAccessToken() {
     }),
   });
   const data = await res.json();
-  if (!data.access_token) throw new Error("Failed to get access token");
+  if (!data.access_token) {
+    // Google's error code (e.g. invalid_grant) tells us why — no secrets here.
+    throw new Error(
+      `token refresh failed: ${data.error || res.status}${data.error_description ? ` (${data.error_description})` : ""}`
+    );
+  }
   return data.access_token as string;
 }
 
@@ -73,17 +78,37 @@ const EMPTY: EventMap = {
   Sunday: [],
 };
 
-export async function GET() {
+export async function GET(request: Request) {
+  // ?debug=1 returns a diagnostic summary (no secrets) instead of events,
+  // so we can see which step fails without digging through Vercel logs.
+  const debug = new URL(request.url).searchParams.get("debug") === "1";
+  const diag: Record<string, unknown> = {
+    hasClientId: Boolean(process.env.GOOGLE_CLIENT_ID),
+    hasClientSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+    hasRefreshToken: Boolean(process.env.GOOGLE_REFRESH_TOKEN),
+    calendarIdsConfigured: Boolean(process.env.GOOGLE_CALENDAR_IDS),
+  };
+
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REFRESH_TOKEN) {
     console.error("[calendar] Missing env vars");
+    if (debug) return NextResponse.json({ ...diag, failedAt: "env vars missing" });
     return NextResponse.json(EMPTY);
   }
 
   let accessToken: string;
   try {
     accessToken = await getAccessToken();
+    diag.tokenOk = true;
   } catch (e) {
     console.error("[calendar] Token error:", e);
+    if (debug) {
+      return NextResponse.json({
+        ...diag,
+        tokenOk: false,
+        failedAt: "token refresh",
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
     return NextResponse.json(EMPTY);
   }
 
@@ -105,7 +130,13 @@ export async function GET() {
     Sunday: [],
   };
 
+  const calDiags: Record<string, unknown>[] = [];
+
   for (const calendarId of calendarIds) {
+    // Mask the calendar id in debug output (it's usually an email address).
+    const masked = calendarId.length > 8 ? `${calendarId.slice(0, 4)}…${calendarId.slice(-8)}` : calendarId;
+    const calDiag: Record<string, unknown> = { calendar: masked };
+    calDiags.push(calDiag);
     const url = new URL(
       `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
     );
@@ -122,11 +153,15 @@ export async function GET() {
     if (!res.ok) {
       const err = await res.text();
       console.error(`[calendar] Failed to fetch calendar ${calendarId}:`, res.status, err);
+      calDiag.status = res.status;
+      calDiag.error = err.slice(0, 200);
       continue;
     }
 
     const data = await res.json();
     console.log(`[calendar] ${calendarId}: ${data.items?.length ?? 0} events`);
+    calDiag.status = 200;
+    calDiag.eventsThisWeek = data.items?.length ?? 0;
 
     for (const event of data.items ?? []) {
       if (event.transparency === "transparent") continue;
@@ -151,6 +186,7 @@ export async function GET() {
       if (!(dayName in events)) continue;
 
       console.log(`[calendar] KEEPING: "${title}" start=${event.start.dateTime || event.start.date}`);
+      calDiag.eventsKept = ((calDiag.eventsKept as number) || 0) + 1;
       events[dayName].push({
         time: event.start.dateTime ? formatTime(event.start.dateTime) : "All Day",
         title,
@@ -158,6 +194,14 @@ export async function GET() {
         isOut: detectIsOut(title),
       });
     }
+  }
+
+  if (debug) {
+    return NextResponse.json({
+      ...diag,
+      calendars: calDiags,
+      note: "eventsThisWeek = all events found; eventsKept = evening (5pm+) or all-day 'out' events shown in the app",
+    });
   }
 
   return NextResponse.json(events, {
