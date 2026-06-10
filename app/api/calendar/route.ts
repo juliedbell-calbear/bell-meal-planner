@@ -73,8 +73,6 @@ const EMPTY: EventMap = {
   Sunday: [],
 };
 
-export const dynamic = "force-dynamic";
-
 export async function GET() {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_REFRESH_TOKEN) {
     console.error("[calendar] Missing env vars");
