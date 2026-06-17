@@ -61,8 +61,12 @@ function freshList(): ShoppingList {
 }
 
 export async function getList(): Promise<ShoppingList> {
+  // The list persists indefinitely: manually-added and checked items stay until
+  // the family removes them. Meal-sourced items are reconciled against the
+  // rolling 7-day plan (see syncWithMealPlan). We only seed a fresh list when
+  // nothing has ever been stored.
   const stored = await kvGet<ShoppingList>(LIST_KEY);
-  if (!stored || !Array.isArray(stored.items) || stored.weekKey !== currentWeekKey()) {
+  if (!stored || !Array.isArray(stored.items)) {
     const list = freshList();
     await kvSet(LIST_KEY, list);
     return list;

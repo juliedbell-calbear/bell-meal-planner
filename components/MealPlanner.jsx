@@ -2,10 +2,9 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { CATEGORIES, CATEGORY_EMOJI } from "@/lib/categorize";
+import { rollingWindow, todayKey } from "@/lib/dates";
 
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-const SHORT_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
+// Fallback dinner ideas, keyed by weekday name (used when the AI call fails).
 const FALLBACK_SUGGESTIONS = {
   Monday: { meal: "Tacos", note: "Easy weeknight starter" },
   Tuesday: { meal: "Crispy chicken", note: "Quick and crowd-pleasing" },
@@ -16,55 +15,25 @@ const FALLBACK_SUGGESTIONS = {
   Sunday: { meal: "Shrimp risotto", note: "Sunday special" },
 };
 
-const DEFAULT_MEALS = {
-  Monday: "", Tuesday: "", Wednesday: "", Thursday: "", Friday: "", Saturday: "", Sunday: "",
-};
-
-const DEFAULT_EVENTS = {
-  Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [], Saturday: [], Sunday: [],
-};
-
-function getWeekStart() {
-  const now = new Date();
-  const day = now.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diff);
-  monday.setHours(0, 0, 0, 0);
-  return monday;
-}
-
-function getWeekLabel() {
-  return getWeekStart().toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
-function getWeekKey() {
-  return getWeekStart().toISOString().split("T")[0];
-}
-
-function todayName() {
-  return DAYS[(new Date().getDay() + 6) % 7];
-}
-
 export default function MealPlanner() {
   const [mealList, setMealList] = useState([]);
-  const [meals, setMeals] = useState(DEFAULT_MEALS);
-  const [notes, setNotes] = useState({});
+  const [meals, setMeals] = useState({}); // keyed by date: { "2026-06-17": "Tacos" }
+  const [notes, setNotes] = useState({}); // keyed by date
   const [items, setItems] = useState([]);
   const [dbOk, setDbOk] = useState(true);
   const [newItem, setNewItem] = useState("");
-  const [editingDay, setEditingDay] = useState(null);
+  const [editingKey, setEditingKey] = useState(null); // which date is being edited
   const [inputVal, setInputVal] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiMeal, setAiMeal] = useState(null);
-  const [tab, setTab] = useState("plan"); // plan | shopping | menu
-  const [calendarEvents, setCalendarEvents] = useState(DEFAULT_EVENTS);
+  const [tab, setTab] = useState("plan"); // plan | shopping | menu | history
+  const [calendarEvents, setCalendarEvents] = useState({}); // keyed by date
+
+  // The rolling window: today through today+6, computed once per mount.
+  const days = useMemo(() => rollingWindow(7), []);
+  const windowKeys = useMemo(() => days.map((d) => d.key), [days]);
 
   // Recipe importer state
   const [recipeOpen, setRecipeOpen] = useState(false);
@@ -91,14 +60,13 @@ export default function MealPlanner() {
       .catch(() => {});
   }, []);
 
-  // Poll the meal plan while on the plan or menu tab
+  // Poll the meal plan while on the plan, menu, or history tab
   useEffect(() => {
-    if (tab !== "plan" && tab !== "menu") return;
+    if (tab !== "plan" && tab !== "menu" && tab !== "history") return;
     const sync = () =>
       fetch("/api/meals")
         .then((r) => r.json())
         .then((data) => {
-          if (data.weekKey && data.weekKey !== getWeekKey()) return;
           if (data.meals) setMeals(data.meals);
           if (data.notes) setNotes(data.notes);
         })
@@ -114,7 +82,9 @@ export default function MealPlanner() {
       fetch("/api/meals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ meals: nextMeals, notes: nextNotes, weekKey: getWeekKey() }),
+        // windowKeys lets the server reconcile the shopping list against the
+        // rolling today→+6 window without doing its own timezone math.
+        body: JSON.stringify({ meals: nextMeals, notes: nextNotes, windowKeys }),
       }).catch(() => {});
     }, 500);
   };
@@ -165,18 +135,19 @@ export default function MealPlanner() {
     shoppingAction({ action: "add", names: [name] });
   };
 
-  const startEdit = (day) => {
-    setEditingDay(day);
-    setInputVal(meals[day] || "");
+  const startEdit = (key) => {
+    setEditingKey(key);
+    setInputVal(meals[key] || "");
     setShowSuggestions(false);
     setBrowsing(false);
     setAiMeal(null);
   };
 
-  const saveEdit = (day) => {
-    const nextMeals = { ...meals, [day]: inputVal };
+  const saveEdit = (key) => {
+    const nextMeals = { ...meals, [key]: inputVal };
+    if (!inputVal) delete nextMeals[key]; // don't persist empty days
     setMeals(nextMeals);
-    setEditingDay(null);
+    setEditingKey(null);
     setShowSuggestions(false);
     setBrowsing(false);
     setAiMeal(null);
@@ -189,10 +160,10 @@ export default function MealPlanner() {
     setBrowsing(false);
   };
 
-  const askAI = async (day) => {
+  const askAI = async (key, weekday) => {
     setAiLoading(true);
     setAiMeal(null);
-    const dayCalEvents = calendarEvents[day] || [];
+    const dayCalEvents = calendarEvents[key] || [];
     const calendarNote = dayCalEvents.length
       ? dayCalEvents.map((e) => `${e.title} (${e.time})`).join(", ")
       : "";
@@ -201,9 +172,10 @@ export default function MealPlanner() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          day,
+          day: weekday,
           calendarNote,
-          alreadyPlanned: Object.values(meals).filter(Boolean),
+          // only avoid repeating meals already in the rolling window
+          alreadyPlanned: windowKeys.map((k) => meals[k]).filter(Boolean),
         }),
       });
       const data = await res.json();
@@ -214,7 +186,7 @@ export default function MealPlanner() {
         throw new Error("no suggestion");
       }
     } catch {
-      const fb = FALLBACK_SUGGESTIONS[day] || FALLBACK_SUGGESTIONS.Monday;
+      const fb = FALLBACK_SUGGESTIONS[weekday] || FALLBACK_SUGGESTIONS.Monday;
       setAiMeal(fb);
       setInputVal(fb.meal);
     }
@@ -274,8 +246,16 @@ export default function MealPlanner() {
     setNewIngredient("");
   };
 
-  const dayEvents = (day) => calendarEvents[day] || [];
-  const hasAlert = (day) => dayEvents(day).some((e) => e.isOut);
+  const dayEvents = (key) => calendarEvents[key] || [];
+  const hasAlert = (key) => dayEvents(key).some((e) => e.isOut);
+
+  // Past meals (before today) that were actually planned, newest first.
+  const historyEntries = useMemo(() => {
+    const today = todayKey();
+    return Object.keys(meals)
+      .filter((k) => k < today && meals[k])
+      .sort((a, b) => (a < b ? 1 : -1));
+  }, [meals]);
 
   const mealNames = mealList.map((m) => m.name);
   const filteredSuggestions = browsing
@@ -332,13 +312,16 @@ export default function MealPlanner() {
           <div style={{ fontSize: 11, letterSpacing: 3, textTransform: "uppercase", color: "#b8a882", marginBottom: 4 }}>
             Bell Family
           </div>
-          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Weekly Meal Planner</div>
-          <div style={{ fontSize: 12, color: "#b8a882", marginTop: 3 }}>Week of {getWeekLabel()}</div>
+          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5 }}>Meal Planner</div>
+          <div style={{ fontSize: 12, color: "#b8a882", marginTop: 3 }}>
+            {days[0].label} – {days[days.length - 1].label}
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <button onClick={() => setTab("menu")} style={btnStyle(tab === "menu")}>🍽️ Menu</button>
           <button onClick={() => setTab("plan")} style={btnStyle(tab === "plan")}>📅 Plan</button>
           <button onClick={() => setTab("shopping")} style={btnStyle(tab === "shopping")}>🛒 Shopping</button>
+          <button onClick={() => setTab("history")} style={btnStyle(tab === "history")}>📖 History</button>
         </div>
       </div>
 
@@ -377,7 +360,7 @@ export default function MealPlanner() {
                 ✦ BELL FAMILY ✦
               </div>
               <div style={{ fontSize: 30, fontWeight: 700, marginTop: 2, textShadow: "0 0 6px rgba(244,240,228,0.25)" }}>
-                This Week's Menu
+                The Next 7 Days
               </div>
               <div
                 style={{
@@ -392,12 +375,12 @@ export default function MealPlanner() {
               />
             </div>
 
-            {DAYS.map((day) => {
-              const isToday = day === todayName();
-              const meal = meals[day];
+            {days.map((d) => {
+              const isToday = d.isToday;
+              const meal = meals[d.key];
               return (
                 <div
-                  key={day}
+                  key={d.key}
                   style={{
                     display: "flex",
                     alignItems: "baseline",
@@ -418,7 +401,7 @@ export default function MealPlanner() {
                       letterSpacing: 1,
                     }}
                   >
-                    {day.toUpperCase().slice(0, 3)}
+                    {d.weekday.toUpperCase().slice(0, 3)}
                     {isToday && <span style={{ fontSize: 10, marginLeft: 5 }}>★</span>}
                   </div>
                   <div
@@ -430,9 +413,9 @@ export default function MealPlanner() {
                     }}
                   >
                     {meal || "chef's choice…"}
-                    {notes[day] && meal && (
+                    {notes[d.key] && meal && (
                       <span style={{ fontSize: 12, fontWeight: 400, color: "#d8cfae", marginLeft: 8 }}>
-                        ({notes[day]})
+                        ({notes[d.key]})
                       </span>
                     )}
                   </div>
@@ -453,22 +436,23 @@ export default function MealPlanner() {
       {/* ============ PLAN ============ */}
       {tab === "plan" && (
         <div style={{ padding: "20px 16px", maxWidth: 680, margin: "0 auto" }}>
-          {DAYS.map((day, i) => {
-            const events = dayEvents(day);
-            const alert = hasAlert(day);
-            const isEditing = editingDay === day;
-            const meal = meals[day];
+          {days.map((d) => {
+            const key = d.key;
+            const events = dayEvents(key);
+            const alert = hasAlert(key);
+            const isEditing = editingKey === key;
+            const meal = meals[key];
 
             return (
               <div
-                key={day}
+                key={key}
                 style={{
                   background: "#fff",
-                  border: `1.5px solid ${alert ? "#f0d8b8" : "#e8e0d0"}`,
+                  border: `1.5px solid ${d.isToday ? "#c8a96e" : alert ? "#f0d8b8" : "#e8e0d0"}`,
                   borderRadius: 10,
                   marginBottom: 10,
                   overflow: "hidden",
-                  boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                  boxShadow: d.isToday ? "0 1px 6px rgba(200,169,110,0.25)" : "0 1px 4px rgba(0,0,0,0.04)",
                 }}
               >
                 <div
@@ -496,10 +480,31 @@ export default function MealPlanner() {
                       flexShrink: 0,
                     }}
                   >
-                    {SHORT_DAYS[i]}
+                    {d.weekday.slice(0, 3).toUpperCase()}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 15 }}>{day}</div>
+                    <div style={{ fontWeight: 700, fontSize: 15 }}>
+                      {d.weekday}
+                      <span style={{ fontSize: 12, fontWeight: 400, color: "#b8a882", marginLeft: 6 }}>
+                        {d.date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </span>
+                      {d.isToday && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: "#2c2416",
+                            background: "#c8a96e",
+                            borderRadius: 10,
+                            padding: "1px 7px",
+                            marginLeft: 8,
+                            letterSpacing: 0.5,
+                          }}
+                        >
+                          TODAY
+                        </span>
+                      )}
+                    </div>
                     {events.length > 0 && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 3 }}>
                         {events.map((ev, j) => (
@@ -599,7 +604,7 @@ export default function MealPlanner() {
                       )}
                       <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
                         <button
-                          onClick={() => saveEdit(day)}
+                          onClick={() => saveEdit(key)}
                           style={{
                             background: "#2c2416",
                             color: "#faf8f4",
@@ -615,7 +620,7 @@ export default function MealPlanner() {
                           Save
                         </button>
                         <button
-                          onClick={() => askAI(day)}
+                          onClick={() => askAI(key, d.weekday)}
                           disabled={aiLoading}
                           style={{
                             background: aiLoading ? "#e8e0d0" : "#c8a96e",
@@ -647,7 +652,7 @@ export default function MealPlanner() {
                           Browse favorites
                         </button>
                         <button
-                          onClick={() => setEditingDay(null)}
+                          onClick={() => setEditingKey(null)}
                           style={{
                             background: "transparent",
                             color: "#aaa",
@@ -662,9 +667,9 @@ export default function MealPlanner() {
                         </button>
                       </div>
                       <input
-                        value={notes[day] || ""}
+                        value={notes[key] || ""}
                         onChange={(e) => {
-                          const nextNotes = { ...notes, [day]: e.target.value };
+                          const nextNotes = { ...notes, [key]: e.target.value };
                           setNotes(nextNotes);
                           syncMeals(meals, nextNotes);
                         }}
@@ -686,7 +691,7 @@ export default function MealPlanner() {
                     </div>
                   ) : (
                     <div
-                      onClick={() => startEdit(day)}
+                      onClick={() => startEdit(key)}
                       style={{
                         display: "flex",
                         alignItems: "center",
@@ -698,8 +703,8 @@ export default function MealPlanner() {
                       {meal ? (
                         <>
                           <span style={{ fontSize: 15, flex: 1, fontWeight: 500 }}>{meal}</span>
-                          {notes[day] && (
-                            <span style={{ fontSize: 11, color: "#9a8a6e", fontStyle: "italic" }}>{notes[day]}</span>
+                          {notes[key] && (
+                            <span style={{ fontSize: 11, color: "#9a8a6e", fontStyle: "italic" }}>{notes[key]}</span>
                           )}
                           <span style={{ fontSize: 11, color: "#b8a882" }}>edit ✏️</span>
                         </>
@@ -975,14 +980,14 @@ export default function MealPlanner() {
             }}
           >
             <div style={{ fontSize: 11, letterSpacing: 2, textTransform: "uppercase", color: "#b8a882", marginBottom: 8 }}>
-              This week's meals
+              Upcoming meals
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {DAYS.map(
-                (day) =>
-                  meals[day] && (
+              {days.map(
+                (d) =>
+                  meals[d.key] && (
                     <span
-                      key={day}
+                      key={d.key}
                       style={{
                         background: "#3d3020",
                         borderRadius: 14,
@@ -991,7 +996,7 @@ export default function MealPlanner() {
                         color: "#e8d8b8",
                       }}
                     >
-                      <span style={{ color: "#b8a882" }}>{SHORT_DAYS[DAYS.indexOf(day)]}</span> {meals[day]}
+                      <span style={{ color: "#b8a882" }}>{d.weekday.slice(0, 3)}</span> {meals[d.key]}
                     </span>
                   )
               )}
@@ -1173,6 +1178,87 @@ export default function MealPlanner() {
             >
               Uncheck everything
             </button>
+          )}
+        </div>
+      )}
+
+      {/* ============ HISTORY ============ */}
+      {tab === "history" && (
+        <div style={{ padding: "20px 16px 60px", maxWidth: 680, margin: "0 auto" }}>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 20, fontWeight: 700 }}>Meal history</div>
+            <div style={{ fontSize: 12, color: "#9a8a6e", marginTop: 3 }}>
+              Every dinner you've planned, most recent first.
+            </div>
+          </div>
+
+          {historyEntries.length === 0 ? (
+            <div
+              style={{
+                background: "#fff",
+                border: "1.5px dashed #e8e0d0",
+                borderRadius: 10,
+                padding: "28px 16px",
+                textAlign: "center",
+                color: "#b8a882",
+                fontSize: 14,
+              }}
+            >
+              No past meals yet — they'll show up here as the days roll by.
+            </div>
+          ) : (
+            (() => {
+              let lastMonth = null;
+              return historyEntries.map((k) => {
+                // k is "YYYY-MM-DD"; build a local Date for display (noon avoids TZ drift).
+                const date = new Date(`${k}T12:00:00`);
+                const monthLabel = date.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+                const showMonth = monthLabel !== lastMonth;
+                lastMonth = monthLabel;
+                return (
+                  <div key={k}>
+                    {showMonth && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          letterSpacing: 2,
+                          textTransform: "uppercase",
+                          color: "#b8a882",
+                          margin: "16px 2px 8px",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {monthLabel}
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        background: "#fff",
+                        border: "1px solid #e8e0d0",
+                        borderRadius: 10,
+                        marginBottom: 8,
+                        padding: "10px 14px",
+                        display: "flex",
+                        alignItems: "baseline",
+                        gap: 12,
+                      }}
+                    >
+                      <div style={{ width: 96, flexShrink: 0, fontSize: 12, color: "#9a8a6e" }}>
+                        {date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <span style={{ fontSize: 15, fontWeight: 500 }}>{meals[k]}</span>
+                        {notes[k] && (
+                          <span style={{ fontSize: 11, color: "#9a8a6e", fontStyle: "italic", marginLeft: 8 }}>
+                            {notes[k]}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()
           )}
         </div>
       )}
