@@ -4,6 +4,26 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { CATEGORIES, CATEGORY_EMOJI } from "@/lib/categorize";
 import { rollingWindow, todayKey } from "@/lib/dates";
 
+// Who a lunch can be for. "Everyone" is the default (a shared lunch); the rest
+// are the immediate family so different people can have different lunches.
+const LUNCH_PEOPLE = ["Everyone", "Chris", "Julie", "Joshua", "Elisha"];
+
+// Common lunches offered in the pull-down. The datalist also lets you type your
+// own, and the family's saved meals get folded in alongside these.
+const LUNCH_IDEAS = [
+  "Leftovers",
+  "Turkey sandwich",
+  "PB&J",
+  "Grilled cheese",
+  "Quesadilla",
+  "Bagel & cream cheese",
+  "Yogurt & fruit",
+  "Pasta salad",
+  "Salad",
+  "Soup",
+  "Buy at school",
+];
+
 // Fallback dinner ideas, keyed by weekday name (used when the AI call fails).
 const FALLBACK_SUGGESTIONS = {
   Monday: { meal: "Tacos", note: "Easy weeknight starter" },
@@ -19,6 +39,10 @@ export default function MealPlanner() {
   const [mealList, setMealList] = useState([]);
   const [meals, setMeals] = useState({}); // keyed by date: { "2026-06-17": "Tacos" }
   const [notes, setNotes] = useState({}); // keyed by date
+  const [lunches, setLunches] = useState({}); // date -> [{ who, what }]
+  const [lunchAddKey, setLunchAddKey] = useState(null); // which day's lunch form is open
+  const [lunchWho, setLunchWho] = useState("Everyone");
+  const [lunchWhat, setLunchWhat] = useState("");
   const [items, setItems] = useState([]);
   const [dbOk, setDbOk] = useState(true);
   const [newItem, setNewItem] = useState("");
@@ -69,6 +93,7 @@ export default function MealPlanner() {
         .then((data) => {
           if (data.meals) setMeals(data.meals);
           if (data.notes) setNotes(data.notes);
+          if (data.lunches) setLunches(data.lunches);
         })
         .catch(() => {});
     sync();
@@ -76,7 +101,7 @@ export default function MealPlanner() {
     return () => clearInterval(interval);
   }, [tab]);
 
-  const syncMeals = (nextMeals, nextNotes) => {
+  const syncMeals = (nextMeals, nextNotes, nextLunches = lunches) => {
     if (mealSyncTimeout.current) clearTimeout(mealSyncTimeout.current);
     mealSyncTimeout.current = setTimeout(() => {
       fetch("/api/meals", {
@@ -84,7 +109,7 @@ export default function MealPlanner() {
         headers: { "Content-Type": "application/json" },
         // windowKeys lets the server reconcile the shopping list against the
         // rolling today→+6 window without doing its own timezone math.
-        body: JSON.stringify({ meals: nextMeals, notes: nextNotes, windowKeys }),
+        body: JSON.stringify({ meals: nextMeals, notes: nextNotes, lunches: nextLunches, windowKeys }),
       }).catch(() => {});
     }, 500);
   };
@@ -152,6 +177,34 @@ export default function MealPlanner() {
     setBrowsing(false);
     setAiMeal(null);
     syncMeals(nextMeals, notes);
+  };
+
+  // ---- Lunches ----
+  const openLunchAdd = (key) => {
+    setLunchAddKey(key);
+    setLunchWho("Everyone");
+    setLunchWhat("");
+  };
+
+  const addLunch = (key) => {
+    const what = lunchWhat.trim();
+    if (!what) return;
+    const entry = { who: lunchWho, what };
+    const next = { ...lunches, [key]: [...(lunches[key] || []), entry] };
+    setLunches(next);
+    setLunchAddKey(null);
+    setLunchWhat("");
+    setLunchWho("Everyone");
+    syncMeals(meals, notes, next);
+  };
+
+  const removeLunch = (key, idx) => {
+    const dayList = (lunches[key] || []).filter((_, j) => j !== idx);
+    const next = { ...lunches };
+    if (dayList.length) next[key] = dayList;
+    else delete next[key];
+    setLunches(next);
+    syncMeals(meals, notes, next);
   };
 
   const pickSuggestion = (s) => {
@@ -258,6 +311,9 @@ export default function MealPlanner() {
   }, [meals]);
 
   const mealNames = mealList.map((m) => m.name);
+  // Pull-down options for lunches: common ideas first, then saved meals not
+  // already in that list. The <input list> still accepts anything typed.
+  const lunchOptions = [...LUNCH_IDEAS, ...mealNames.filter((n) => !LUNCH_IDEAS.includes(n))];
   const filteredSuggestions = browsing
     ? mealNames.filter((s) => s !== inputVal)
     : mealNames
@@ -417,6 +473,14 @@ export default function MealPlanner() {
                       <span style={{ fontSize: 12, fontWeight: 400, color: "#d8cfae", marginLeft: 8 }}>
                         ({notes[d.key]})
                       </span>
+                    )}
+                    {(lunches[d.key] || []).length > 0 && (
+                      <div style={{ fontSize: 13, fontWeight: 400, color: "#cfd8c4", marginTop: 3, lineHeight: 1.3 }}>
+                        🥪{" "}
+                        {(lunches[d.key] || [])
+                          .map((l) => (l.who && l.who !== "Everyone" ? `${l.who}: ${l.what}` : l.what))
+                          .join(" · ")}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -716,9 +780,151 @@ export default function MealPlanner() {
                     </div>
                   )}
                 </div>
+
+                {/* Lunch section — optional, per person */}
+                <div style={{ padding: "10px 14px 12px", borderTop: "1px solid #f0ece4" }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      letterSpacing: 1.5,
+                      textTransform: "uppercase",
+                      color: "#9a8a6e",
+                      marginBottom: (lunches[key] || []).length ? 6 : 0,
+                      fontWeight: 700,
+                    }}
+                  >
+                    🥪 Lunch
+                  </div>
+
+                  {(lunches[key] || []).map((l, idx) => (
+                    <div
+                      key={idx}
+                      style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}
+                    >
+                      {l.who && l.who !== "Everyone" && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: "#6b5c3e",
+                            background: "#f4efe4",
+                            border: "1px solid #e0d8c8",
+                            borderRadius: 10,
+                            padding: "1px 8px",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {l.who}
+                        </span>
+                      )}
+                      <span style={{ fontSize: 14, flex: 1 }}>{l.what}</span>
+                      <span
+                        onClick={() => removeLunch(key, idx)}
+                        style={{ color: "#d4c9b0", cursor: "pointer", fontSize: 13, fontWeight: 700, padding: "0 4px" }}
+                      >
+                        ✕
+                      </span>
+                    </div>
+                  ))}
+
+                  {lunchAddKey === key ? (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6, alignItems: "center" }}>
+                      <select
+                        value={lunchWho}
+                        onChange={(e) => setLunchWho(e.target.value)}
+                        style={{
+                          border: "1px solid #d4c9b0",
+                          borderRadius: 6,
+                          padding: "7px 8px",
+                          fontSize: 13,
+                          fontFamily: "inherit",
+                          background: "#fffdf8",
+                          color: "#2c2416",
+                          outline: "none",
+                        }}
+                      >
+                        {LUNCH_PEOPLE.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        list="lunch-ideas"
+                        value={lunchWhat}
+                        onChange={(e) => setLunchWhat(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && addLunch(key)}
+                        placeholder="Pick a lunch or type your own…"
+                        autoFocus
+                        style={{
+                          flex: 1,
+                          minWidth: 140,
+                          border: "1.5px solid #c8a96e",
+                          borderRadius: 6,
+                          padding: "7px 10px",
+                          fontSize: 13,
+                          fontFamily: "inherit",
+                          background: "#fffdf8",
+                          outline: "none",
+                          boxSizing: "border-box",
+                        }}
+                      />
+                      <button
+                        onClick={() => addLunch(key)}
+                        style={{
+                          background: "#2c2416",
+                          color: "#faf8f4",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "7px 14px",
+                          fontSize: 12,
+                          fontFamily: "inherit",
+                          cursor: "pointer",
+                          fontWeight: 700,
+                        }}
+                      >
+                        Add
+                      </button>
+                      <button
+                        onClick={() => setLunchAddKey(null)}
+                        style={{
+                          background: "transparent",
+                          color: "#aaa",
+                          border: "none",
+                          padding: "7px 8px",
+                          fontSize: 12,
+                          fontFamily: "inherit",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      onClick={() => openLunchAdd(key)}
+                      style={{
+                        fontSize: 13,
+                        color: "#b8a882",
+                        fontStyle: "italic",
+                        cursor: "pointer",
+                        marginTop: (lunches[key] || []).length ? 4 : 6,
+                      }}
+                    >
+                      + Add a lunch
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
+
+          {/* Shared datalist for the lunch pull-down (also accepts free text) */}
+          <datalist id="lunch-ideas">
+            {lunchOptions.map((o) => (
+              <option key={o} value={o} />
+            ))}
+          </datalist>
 
           {/* Add recipe */}
           {!recipeOpen ? (

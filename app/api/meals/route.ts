@@ -9,9 +9,15 @@ const ROW_KEY = "plan";
 // Meals/notes are keyed by calendar date (YYYY-MM-DD), accumulating every day
 // so past selections are kept forever. (Older plans were keyed by weekday name
 // for a single overwritten week — see migratePlan.)
+// A lunch entry: who it's for ("Everyone" or a family member) and what it is.
+type LunchEntry = { who: string; what: string };
+
 type Plan = {
   meals?: Record<string, string>;
   notes?: Record<string, string>;
+  // Lunches are keyed by date, each day holding a list so different people can
+  // have different lunches. Added after dinners, so no migration is needed.
+  lunches?: Record<string, LunchEntry[]>;
   weekKey?: string; // legacy, only read during migration
 };
 
@@ -61,7 +67,7 @@ function migratePlan(plan: Plan): { plan: Plan; migrated: boolean } {
   };
 
   return {
-    plan: { meals: convert(plan.meals), notes: convert(plan.notes) },
+    plan: { ...plan, meals: convert(plan.meals), notes: convert(plan.notes) },
     migrated: true,
   };
 }
@@ -77,7 +83,11 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const body: Plan & { windowKeys?: string[] } = await request.json();
-  const value: Plan = { meals: body.meals ?? {}, notes: body.notes ?? {} };
+  const value: Plan = {
+    meals: body.meals ?? {},
+    notes: body.notes ?? {},
+    lunches: body.lunches ?? {},
+  };
   const ok = await kvSet(ROW_KEY, value);
 
   // Keep the shopping list in step with the rolling window: add ingredients for
