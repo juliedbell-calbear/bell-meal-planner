@@ -84,15 +84,28 @@ export function addItems(
   source: ShoppingItem["source"],
   meta: { meal?: string; addedBy?: string } = {}
 ): ShoppingList {
-  const existing = new Set(list.items.map((i) => normalizeItemName(i.name)));
+  const byNorm = new Map(list.items.map((i) => [normalizeItemName(i.name), i]));
   for (const raw of names) {
     const name = raw.trim();
     if (!name) continue;
     const norm = normalizeItemName(name);
-    if (existing.has(norm)) continue;
+    const existing = byNorm.get(norm);
+    if (existing) {
+      // Already on the list. If a person explicitly re-adds an item that was
+      // checked off (a stale leftover from a previous trip — e.g. "ground
+      // turkey" left checked from an earlier meal), revive it so the add is
+      // actually visible instead of silently doing nothing. An unchecked
+      // duplicate is already showing, and we don't revive during automatic
+      // meal-sync (source "meal") so it can't fight checkmarks made while
+      // shopping.
+      if (source === "manual" && existing.checked) {
+        existing.checked = false;
+        if (meta.addedBy) existing.addedBy = meta.addedBy;
+      }
+      continue;
+    }
     if (source === "meal" && list.removedNames.includes(norm)) continue;
-    existing.add(norm);
-    list.items.push({
+    const item: ShoppingItem = {
       id: makeId(),
       name,
       category: categorize(name),
@@ -100,7 +113,9 @@ export function addItems(
       source,
       ...(meta.meal ? { meal: meta.meal } : {}),
       ...(meta.addedBy ? { addedBy: meta.addedBy } : {}),
-    });
+    };
+    list.items.push(item);
+    byNorm.set(norm, item);
   }
   return list;
 }
