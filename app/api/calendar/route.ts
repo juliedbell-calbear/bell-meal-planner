@@ -45,7 +45,7 @@ function detectWho(title: string) {
   if (t.includes("chris")) return "Chris";
   if (t.includes("julie")) return "Julie";
   if (t.includes("joshua")) return "Joshua";
-  if (t.includes("eleanor") || t.includes(" e:") || t.startsWith("e:")) return "Eleanor";
+  if (t.includes("elisha") || t.includes(" e:") || t.startsWith("e:")) return "Elisha";
   if (t.includes("kids") || t.includes("school") || t.includes("wildwood")) return "Kids";
   return "Family";
 }
