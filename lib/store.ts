@@ -16,7 +16,17 @@ function getClient(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) return null;
-  return createClient(url, key);
+  // Route every Supabase request through fetch with `no-store`. Next.js
+  // otherwise caches these GETs in its Data Cache (even on force-dynamic
+  // routes), so a freshly-saved row — e.g. a new favorite recipe — could be
+  // missing from reads until the cache was evicted. That made "add to
+  // favorites" look broken: the recipe saved, but never showed up.
+  return createClient(url, key, {
+    global: {
+      fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, { ...init, cache: "no-store" }),
+    },
+  });
 }
 
 export function dbOk() {

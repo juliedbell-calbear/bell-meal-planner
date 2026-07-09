@@ -79,21 +79,73 @@ export function heuristicCleanIngredient(line: string): string {
 const SKIP_ITEMS =
   /^(water|ice water|salt|kosher salt|sea salt|table salt|pepper|black pepper|ground black pepper|freshly ground black pepper|freshly cracked black pepper|salt and pepper( to taste)?|salt & pepper)$/i;
 
+// Pull a recipe name from the opening text: first non-empty line, trimmed at
+// an "Ingredients" marker or the first sentence break ("Chicken Fajitas.
+// Ingredients: ..." -> "Chicken Fajitas").
+function heuristicName(text: string): string {
+  const firstLine = text.split("\n").map((l) => l.trim()).find(Boolean) || "";
+  const name = firstLine
+    .split(/ingredients?\b\s*:?/i)[0]
+    .split(/[.•|]/)[0]
+    .trim()
+    .slice(0, 80);
+  return name || "New recipe";
+}
+
+// Break the ingredient region into candidate items: one per line, and for a
+// run-on comma list on a single line ("1 lb x, 2 y, z") split that too.
+function splitCandidates(region: string): string[] {
+  const out: string[] = [];
+  for (const rawLine of region.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const commaCount = (line.match(/,/g) || []).length;
+    if (line.length > 60 && commaCount >= 2) {
+      for (const part of line.split(/[,;•]/)) {
+        const p = part.trim();
+        if (p) out.push(p);
+      }
+    } else {
+      out.push(line);
+    }
+  }
+  return out;
+}
+
+// A candidate looks like an ingredient if it's bulleted/quantified or a short
+// noun phrase — filters out prose/instruction sentences.
+function looksLikeIngredient(line: string): boolean {
+  return /^[-•*\d¼½¾⅓⅔⅛]/.test(line) || (line.length < 60 && line.split(/\s+/).length <= 7);
+}
+
 function heuristicParseText(text: string): ParsedRecipe {
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const name = lines[0]?.slice(0, 80) || "New recipe";
-  // Lines that look like ingredients: start with a quantity/bullet, or are
-  // short noun-ish lines.
+  const norm = text.replace(/\r/g, "").trim();
+  const name = heuristicName(norm);
+
+  // Prefer an explicit "Ingredients" section (stopping before the instructions)
+  // so a pasted full recipe doesn't drag the cooking steps into the list.
+  let region: string;
+  const marker = norm.match(/ingredients?\b\s*:?/i);
+  if (marker) {
+    region = norm.slice(marker.index! + marker[0].length);
+    const stop = region.match(/\b(instructions?|directions?|method|steps|preparation|procedure)\b/i);
+    if (stop) region = region.slice(0, stop.index);
+  } else {
+    // No label — use everything after the first line (the title).
+    const nl = norm.indexOf("\n");
+    region = nl >= 0 ? norm.slice(nl + 1) : "";
+  }
+
   const ingredients: string[] = [];
-  for (const line of lines.slice(1)) {
-    const looksLikeIngredient =
-      /^[-•*\d¼½¾⅓⅔⅛]/.test(line) || (line.length < 60 && line.split(" ").length <= 6);
-    if (!looksLikeIngredient) continue;
-    const cleaned = heuristicCleanIngredient(line);
-    if (cleaned && cleaned.length > 1 && !ingredients.includes(cleaned)) {
+  for (const candidate of splitCandidates(region)) {
+    if (!looksLikeIngredient(candidate)) continue;
+    const cleaned = heuristicCleanIngredient(candidate);
+    if (
+      cleaned &&
+      cleaned.length > 1 &&
+      cleaned.length < 60 &&
+      !ingredients.some((x) => x.toLowerCase() === cleaned.toLowerCase())
+    ) {
       ingredients.push(cleaned);
     }
   }
