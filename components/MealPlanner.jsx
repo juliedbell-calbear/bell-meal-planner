@@ -37,7 +37,10 @@ const FALLBACK_SUGGESTIONS = {
 
 export default function MealPlanner() {
   const [mealList, setMealList] = useState([]);
-  const [meals, setMeals] = useState({}); // keyed by date: { "2026-06-17": "Tacos" }
+  // Dinners keyed by date. A day holds one or more dishes (mains + sides), e.g.
+  // { "2026-06-17": ["Tacos", "Rice", "Salad"] }. Legacy plans stored a single
+  // string per day; dishesFor() reads both shapes.
+  const [meals, setMeals] = useState({});
   const [notes, setNotes] = useState({}); // keyed by date
   const [lunches, setLunches] = useState({}); // date -> [{ who, what }]
   const [lunchAddKey, setLunchAddKey] = useState(null); // which day's lunch form is open
@@ -47,7 +50,8 @@ export default function MealPlanner() {
   const [dbOk, setDbOk] = useState(true);
   const [newItem, setNewItem] = useState("");
   const [editingKey, setEditingKey] = useState(null); // which date is being edited
-  const [inputVal, setInputVal] = useState("");
+  const [inputVal, setInputVal] = useState(""); // the dish currently being typed
+  const [draftDishes, setDraftDishes] = useState([]); // dishes staged for the day being edited
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -160,19 +164,48 @@ export default function MealPlanner() {
     shoppingAction({ action: "add", names: [name] });
   };
 
+  // Normalize a day's dinner (legacy single string or new array) to a dish list.
+  const dishesFor = (key) => {
+    const v = meals[key];
+    if (Array.isArray(v)) return v;
+    return v ? [v] : [];
+  };
+
   const startEdit = (key) => {
     setEditingKey(key);
-    setInputVal(meals[key] || "");
+    setDraftDishes(dishesFor(key));
+    setInputVal("");
     setShowSuggestions(false);
     setBrowsing(false);
     setAiMeal(null);
   };
 
+  // Stage a dish (skip blanks and exact duplicates) and clear the input.
+  const addDraftDish = (name) => {
+    const dish = (name ?? inputVal).trim();
+    if (!dish) return;
+    setDraftDishes((prev) => (prev.includes(dish) ? prev : [...prev, dish]));
+    setInputVal("");
+    setShowSuggestions(false);
+    setBrowsing(false);
+    setAiMeal(null);
+  };
+
+  const removeDraftDish = (idx) => {
+    setDraftDishes((prev) => prev.filter((_, j) => j !== idx));
+  };
+
   const saveEdit = (key) => {
-    const nextMeals = { ...meals, [key]: inputVal };
-    if (!inputVal) delete nextMeals[key]; // don't persist empty days
+    // Fold in any dish still sitting unsent in the input box.
+    const pending = inputVal.trim();
+    const dishes = pending && !draftDishes.includes(pending) ? [...draftDishes, pending] : draftDishes;
+    const nextMeals = { ...meals };
+    if (dishes.length) nextMeals[key] = dishes;
+    else delete nextMeals[key]; // don't persist empty days
     setMeals(nextMeals);
     setEditingKey(null);
+    setInputVal("");
+    setDraftDishes([]);
     setShowSuggestions(false);
     setBrowsing(false);
     setAiMeal(null);
@@ -207,10 +240,10 @@ export default function MealPlanner() {
     syncMeals(meals, notes, next);
   };
 
+  // Picking a favorite (autocomplete or browse) stages it as a dish right away,
+  // so you can quickly add several.
   const pickSuggestion = (s) => {
-    setInputVal(s);
-    setShowSuggestions(false);
-    setBrowsing(false);
+    addDraftDish(s);
   };
 
   const askAI = async (key, weekday) => {
@@ -228,7 +261,7 @@ export default function MealPlanner() {
           day: weekday,
           calendarNote,
           // only avoid repeating meals already in the rolling window
-          alreadyPlanned: windowKeys.map((k) => meals[k]).filter(Boolean),
+          alreadyPlanned: windowKeys.flatMap((k) => dishesFor(k)),
         }),
       });
       const data = await res.json();
@@ -306,7 +339,11 @@ export default function MealPlanner() {
   const historyEntries = useMemo(() => {
     const today = todayKey();
     return Object.keys(meals)
-      .filter((k) => k < today && meals[k])
+      .filter((k) => {
+        if (k >= today) return false;
+        const v = meals[k];
+        return Array.isArray(v) ? v.length > 0 : Boolean(v);
+      })
       .sort((a, b) => (a < b ? 1 : -1));
   }, [meals]);
 
@@ -433,7 +470,8 @@ export default function MealPlanner() {
 
             {days.map((d) => {
               const isToday = d.isToday;
-              const meal = meals[d.key];
+              const dishes = dishesFor(d.key);
+              const hasDinner = dishes.length > 0;
               return (
                 <div
                   key={d.key}
@@ -462,14 +500,14 @@ export default function MealPlanner() {
                   </div>
                   <div
                     style={{
-                      fontSize: meal ? 21 : 16,
-                      fontWeight: meal ? 700 : 400,
-                      color: meal ? "#fdfaf0" : "rgba(244,240,228,0.35)",
+                      fontSize: hasDinner ? 21 : 16,
+                      fontWeight: hasDinner ? 700 : 400,
+                      color: hasDinner ? "#fdfaf0" : "rgba(244,240,228,0.35)",
                       lineHeight: 1.25,
                     }}
                   >
-                    {meal || "chef's choice…"}
-                    {notes[d.key] && meal && (
+                    {hasDinner ? dishes.join(" + ") : "chef's choice…"}
+                    {notes[d.key] && hasDinner && (
                       <span style={{ fontSize: 12, fontWeight: 400, color: "#d8cfae", marginLeft: 8 }}>
                         ({notes[d.key]})
                       </span>
@@ -505,7 +543,7 @@ export default function MealPlanner() {
             const events = dayEvents(key);
             const alert = hasAlert(key);
             const isEditing = editingKey === key;
-            const meal = meals[key];
+            const dishes = dishesFor(key);
 
             return (
               <div
@@ -595,7 +633,35 @@ export default function MealPlanner() {
                 <div style={{ padding: "10px 14px 12px" }}>
                   {isEditing ? (
                     <div>
-                      <div style={{ position: "relative" }}>
+                      {draftDishes.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                          {draftDishes.map((dish, idx) => (
+                            <span
+                              key={idx}
+                              style={{
+                                background: "#f4efe4",
+                                border: "1px solid #e0d8c8",
+                                borderRadius: 14,
+                                padding: "4px 10px",
+                                fontSize: 13,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                              }}
+                            >
+                              {dish}
+                              <span
+                                onClick={() => removeDraftDish(idx)}
+                                style={{ cursor: "pointer", color: "#b09a70", fontWeight: 700 }}
+                              >
+                                ✕
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                        <div style={{ position: "relative", flex: 1 }}>
                         <input
                           value={inputVal}
                           onChange={(e) => {
@@ -604,7 +670,13 @@ export default function MealPlanner() {
                             setShowSuggestions(true);
                           }}
                           onFocus={() => { if (browsing) setShowSuggestions(true); }}
-                          placeholder="What's for dinner?"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && inputVal.trim()) {
+                              e.preventDefault();
+                              addDraftDish();
+                            }
+                          }}
+                          placeholder={draftDishes.length ? "Add another dish or side…" : "What's for dinner?"}
                           autoFocus
                           style={{
                             width: "100%",
@@ -650,6 +722,26 @@ export default function MealPlanner() {
                             ))}
                           </div>
                         )}
+                        </div>
+                        <button
+                          onClick={() => addDraftDish()}
+                          disabled={!inputVal.trim()}
+                          style={{
+                            background: inputVal.trim() ? "#c8a96e" : "#e8e0d0",
+                            color: inputVal.trim() ? "#2c2416" : "#aaa",
+                            border: "none",
+                            borderRadius: 6,
+                            padding: "8px 14px",
+                            fontSize: 13,
+                            fontFamily: "inherit",
+                            cursor: inputVal.trim() ? "pointer" : "default",
+                            fontWeight: 700,
+                            whiteSpace: "nowrap",
+                            flexShrink: 0,
+                          }}
+                        >
+                          + Add
+                        </button>
                       </div>
                       {aiMeal && (
                         <div
@@ -716,7 +808,14 @@ export default function MealPlanner() {
                           Browse favorites
                         </button>
                         <button
-                          onClick={() => setEditingKey(null)}
+                          onClick={() => {
+                            setEditingKey(null);
+                            setInputVal("");
+                            setDraftDishes([]);
+                            setShowSuggestions(false);
+                            setBrowsing(false);
+                            setAiMeal(null);
+                          }}
                           style={{
                             background: "transparent",
                             color: "#aaa",
@@ -758,19 +857,33 @@ export default function MealPlanner() {
                       onClick={() => startEdit(key)}
                       style={{
                         display: "flex",
-                        alignItems: "center",
+                        alignItems: "flex-start",
                         gap: 10,
                         cursor: "pointer",
                         minHeight: 36,
                       }}
                     >
-                      {meal ? (
+                      {dishes.length > 0 ? (
                         <>
-                          <span style={{ fontSize: 15, flex: 1, fontWeight: 500 }}>{meal}</span>
-                          {notes[key] && (
-                            <span style={{ fontSize: 11, color: "#9a8a6e", fontStyle: "italic" }}>{notes[key]}</span>
-                          )}
-                          <span style={{ fontSize: 11, color: "#b8a882" }}>edit ✏️</span>
+                          <div style={{ flex: 1 }}>
+                            {dishes.map((dish, i) => (
+                              <div
+                                key={i}
+                                style={{ fontSize: 15, fontWeight: 500, lineHeight: 1.35 }}
+                              >
+                                {dishes.length > 1 && (
+                                  <span style={{ color: "#c8a96e", marginRight: 6 }}>•</span>
+                                )}
+                                {dish}
+                              </div>
+                            ))}
+                            {notes[key] && (
+                              <div style={{ fontSize: 11, color: "#9a8a6e", fontStyle: "italic", marginTop: 3 }}>
+                                {notes[key]}
+                              </div>
+                            )}
+                          </div>
+                          <span style={{ fontSize: 11, color: "#b8a882", whiteSpace: "nowrap" }}>edit ✏️</span>
                         </>
                       ) : (
                         <span style={{ fontSize: 13, color: "#b8a882", fontStyle: "italic" }}>
@@ -1191,7 +1304,7 @@ export default function MealPlanner() {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {days.map(
                 (d) =>
-                  meals[d.key] && (
+                  dishesFor(d.key).length > 0 && (
                     <span
                       key={d.key}
                       style={{
@@ -1202,7 +1315,8 @@ export default function MealPlanner() {
                         color: "#e8d8b8",
                       }}
                     >
-                      <span style={{ color: "#b8a882" }}>{d.weekday.slice(0, 3)}</span> {meals[d.key]}
+                      <span style={{ color: "#b8a882" }}>{d.weekday.slice(0, 3)}</span>{" "}
+                      {dishesFor(d.key).join(" + ")}
                     </span>
                   )
               )}
@@ -1453,7 +1567,7 @@ export default function MealPlanner() {
                         {date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
                       </div>
                       <div style={{ flex: 1 }}>
-                        <span style={{ fontSize: 15, fontWeight: 500 }}>{meals[k]}</span>
+                        <span style={{ fontSize: 15, fontWeight: 500 }}>{dishesFor(k).join(" + ")}</span>
                         {notes[k] && (
                           <span style={{ fontSize: 11, color: "#9a8a6e", fontStyle: "italic", marginLeft: 8 }}>
                             {notes[k]}

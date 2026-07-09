@@ -13,7 +13,9 @@ const ROW_KEY = "plan";
 type LunchEntry = { who: string; what: string };
 
 type Plan = {
-  meals?: Record<string, string>;
+  // A day's dinner is one or more dishes (mains + sides). Legacy plans stored a
+  // single string per day; both shapes are read (see dishesOf / client).
+  meals?: Record<string, string | string[]>;
   notes?: Record<string, string>;
   // Lunches are keyed by date, each day holding a list so different people can
   // have different lunches. Added after dinners, so no migration is needed.
@@ -31,7 +33,7 @@ const WEEKDAY_ORDER = [
   "Sunday",
 ];
 
-function isWeekdayKeyed(map: Record<string, string> | undefined): boolean {
+function isWeekdayKeyed(map: Record<string, unknown> | undefined): boolean {
   if (!map) return false;
   return Object.keys(map).some((k) => WEEKDAY_ORDER.includes(k));
 }
@@ -54,11 +56,11 @@ function migratePlan(plan: Plan): { plan: Plan; migrated: boolean } {
     ).padStart(2, "0")}`;
   };
 
-  const convert = (map: Record<string, string> = {}): Record<string, string> => {
-    const out: Record<string, string> = {};
+  const convert = <T,>(map: Record<string, T> = {}): Record<string, T> => {
+    const out: Record<string, T> = {};
     for (const [k, v] of Object.entries(map)) {
       if (WEEKDAY_ORDER.includes(k)) {
-        if (v) out[dateFor(k)] = v; // drop empty placeholders
+        if (v) out[dateFor(k)] = v; // drop empty placeholders (legacy weekday keys)
       } else {
         out[k] = v; // already a date key — keep
       }
@@ -96,9 +98,12 @@ export async function POST(request: Request) {
   const windowKeys = Array.isArray(body.windowKeys) ? body.windowKeys : [];
   if (windowKeys.length && value.meals) {
     try {
-      const windowMeals = windowKeys
-        .map((k) => value.meals?.[k])
-        .filter((m): m is string => Boolean(m));
+      // Flatten each day's dish(es) — string or string[] — into one name list.
+      const windowMeals = windowKeys.flatMap((k) => {
+        const v = value.meals?.[k];
+        if (Array.isArray(v)) return v.filter(Boolean);
+        return v ? [v] : [];
+      });
       await syncWithMealPlan(windowMeals);
     } catch (e) {
       console.error("[meals] shopping sync failed:", e);
