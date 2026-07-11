@@ -72,7 +72,7 @@ export function heuristicCleanIngredient(line: string): string {
   // not part of the name ("boneless, skinless chicken breast").
   const parts = s.split(",").map((p) => p.trim());
   const kept = [parts[0], ...parts.slice(1).filter((p) => p && !PREP_WORDS.test(p))];
-  return kept.join(" ").replace(/\s+/g, " ").trim();
+  return kept.join(" ").replace(/\s+/g, " ").replace(/[.;,]+$/, "").trim();
 }
 
 // Things nobody needs on a shopping list.
@@ -99,11 +99,14 @@ function splitCandidates(region: string): string[] {
   for (const rawLine of region.split("\n")) {
     const line = rawLine.trim();
     if (!line) continue;
+    // A line with 2+ commas is a run-on list ("1 lb x, 2 y, z") — split it.
+    // A single comma is usually part of one item ("boneless, skinless chicken")
+    // so leave those intact. Drop parts that are just prep notes.
     const commaCount = (line.match(/,/g) || []).length;
-    if (line.length > 60 && commaCount >= 2) {
+    if (commaCount >= 2) {
       for (const part of line.split(/[,;•]/)) {
         const p = part.trim();
-        if (p) out.push(p);
+        if (p && !PREP_WORDS.test(p)) out.push(p);
       }
     } else {
       out.push(line);
