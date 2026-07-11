@@ -73,6 +73,16 @@ export default function MealPlanner() {
   const [newIngredient, setNewIngredient] = useState("");
 
   const mealSyncTimeout = useRef(null);
+  // Guards so the 5s poll never clobbers work in progress: don't apply server
+  // data while a day is being edited, or while a save is still in flight
+  // (otherwise a poll can revert a just-typed meal before it persists).
+  const editingKeyRef = useRef(null);
+  const pendingWrite = useRef(false);
+  const writeToken = useRef(0);
+
+  useEffect(() => {
+    editingKeyRef.current = editingKey;
+  }, [editingKey]);
 
   const loadMealList = () =>
     fetch("/api/meal-list")
@@ -95,6 +105,8 @@ export default function MealPlanner() {
       fetch("/api/meals")
         .then((r) => r.json())
         .then((data) => {
+          // Never overwrite a day the user is editing or an unconfirmed save.
+          if (editingKeyRef.current !== null || pendingWrite.current) return;
           if (data.meals) setMeals(data.meals);
           if (data.notes) setNotes(data.notes);
           if (data.lunches) setLunches(data.lunches);
@@ -106,6 +118,11 @@ export default function MealPlanner() {
   }, [tab]);
 
   const syncMeals = (nextMeals, nextNotes, nextLunches = lunches) => {
+    // Mark a write in flight so the poll won't revert it before it lands. The
+    // token ensures only the latest write clears the flag (rapid edits debounce
+    // to a single POST, but a slow in-flight one shouldn't clear a newer one).
+    pendingWrite.current = true;
+    const token = ++writeToken.current;
     if (mealSyncTimeout.current) clearTimeout(mealSyncTimeout.current);
     mealSyncTimeout.current = setTimeout(() => {
       fetch("/api/meals", {
@@ -114,7 +131,11 @@ export default function MealPlanner() {
         // windowKeys lets the server reconcile the shopping list against the
         // rolling today→+6 window without doing its own timezone math.
         body: JSON.stringify({ meals: nextMeals, notes: nextNotes, lunches: nextLunches, windowKeys }),
-      }).catch(() => {});
+      })
+        .catch(() => {})
+        .finally(() => {
+          if (writeToken.current === token) pendingWrite.current = false;
+        });
     }, 500);
   };
 
@@ -701,8 +722,10 @@ export default function MealPlanner() {
                               border: "1.5px solid #d4c9b0",
                               borderRadius: 6,
                               zIndex: 10,
-                              maxHeight: browsing ? 220 : 160,
+                              maxHeight: browsing ? 260 : 160,
                               overflowY: "auto",
+                              WebkitOverflowScrolling: "touch",
+                              overscrollBehavior: "contain",
                               boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
                             }}
                           >
