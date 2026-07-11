@@ -574,7 +574,9 @@ export default function MealPlanner() {
                   border: `1.5px solid ${d.isToday ? "#c8a96e" : alert ? "#f0d8b8" : "#e8e0d0"}`,
                   borderRadius: 10,
                   marginBottom: 10,
-                  overflow: "hidden",
+                  // While editing, let the favorites list extend past the card
+                  // (hidden would clip the pull-down and break its scrolling).
+                  overflow: isEditing ? "visible" : "hidden",
                   boxShadow: d.isToday ? "0 1px 6px rgba(200,169,110,0.25)" : "0 1px 4px rgba(0,0,0,0.04)",
                 }}
               >
@@ -711,40 +713,6 @@ export default function MealPlanner() {
                             boxSizing: "border-box",
                           }}
                         />
-                        {showSuggestions && filteredSuggestions.length > 0 && (
-                          <div
-                            style={{
-                              position: "absolute",
-                              top: "100%",
-                              left: 0,
-                              right: 0,
-                              background: "#fff",
-                              border: "1.5px solid #d4c9b0",
-                              borderRadius: 6,
-                              zIndex: 10,
-                              maxHeight: browsing ? 260 : 160,
-                              overflowY: "auto",
-                              WebkitOverflowScrolling: "touch",
-                              overscrollBehavior: "contain",
-                              boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                            }}
-                          >
-                            {filteredSuggestions.map((s) => (
-                              <div
-                                key={s}
-                                onClick={() => pickSuggestion(s)}
-                                style={{
-                                  padding: "8px 12px",
-                                  fontSize: 13,
-                                  cursor: "pointer",
-                                  borderBottom: "1px solid #f0ece4",
-                                }}
-                              >
-                                {s}
-                              </div>
-                            ))}
-                          </div>
-                        )}
                         </div>
                         <button
                           onClick={() => addDraftDish()}
@@ -766,6 +734,35 @@ export default function MealPlanner() {
                           + Add
                         </button>
                       </div>
+                      {/* Favorites picker: inline (normal flow), so the whole
+                          list shows and the page scrolls — no clipped/absolute
+                          overlay that fought scrolling on mobile. */}
+                      {showSuggestions && filteredSuggestions.length > 0 && (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            background: "#fff",
+                            border: "1.5px solid #d4c9b0",
+                            borderRadius: 6,
+                            overflow: "hidden",
+                          }}
+                        >
+                          {filteredSuggestions.map((s) => (
+                            <div
+                              key={s}
+                              onClick={() => pickSuggestion(s)}
+                              style={{
+                                padding: "10px 12px",
+                                fontSize: 14,
+                                cursor: "pointer",
+                                borderBottom: "1px solid #f0ece4",
+                              }}
+                            >
+                              {s}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {aiMeal && (
                         <div
                           style={{
